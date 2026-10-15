@@ -1,3 +1,5 @@
+![playwright-shard-balancer: shard Playwright by duration, not test count, so every shard finishes at about the same time](https://raw.githubusercontent.com/qa-gary-parker/playwright-shard-balancer/main/.github/banner.png)
+
 # playwright-shard-balancer
 
 Duration-balanced sharding for Playwright. Every shard finishes at about the same time, so a sharded run takes the even split of the work instead of the slowest count-based shard.

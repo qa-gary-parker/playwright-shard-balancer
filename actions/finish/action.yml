@@ -14,7 +14,7 @@ inputs:
     description: Optional `playwright test --list --reporter=json` output, to name any test no shard ran.
     default: ''
   version:
-    description: playwright-shard-balancer version to run when the project does not have it installed.
+    description: playwright-shard-balancer version to run with npx when the project does not have it installed. Set an exact version to pin it.
     default: latest
 runs:
   using: composite

@@ -24,6 +24,8 @@ const SEARCH_NODES = 400_000;
 const WALL_ITERATIONS = 200;
 const WALL_CANDIDATES = 48;
 const WALL_TARGETS = 4;
+// Swaps cost a pass over two shards per pair, so they stop after this many items visited.
+const WALL_SWAP_VISITS = 100_000;
 
 // Wall time of one shard: its items go to the first free worker, in load order.
 export function wallTime(items: Item[], bin: number[], workers: number): number {
@@ -264,11 +266,13 @@ function refineSums(items: Item[], bins: number[][]): number[][] {
 }
 
 // With several workers per shard, a shard's wall time also depends on how its items pack onto
-// workers. Moves the heaviest items off the slowest shard while that lowers the slowest wall time.
+// workers. Moves the heaviest items off the slowest shard, or swaps them for lighter ones, while
+// that lowers the slowest wall time.
 export function refineWalls(items: Item[], bins: number[][], workers: number): number[][] {
   const n = bins.length;
   const result = bins.map((b) => [...b]);
   const walls = result.map((b) => wallTime(items, b, workers));
+  let visits = WALL_SWAP_VISITS;
   for (let iter = 0; iter < WALL_ITERATIONS; iter++) {
     let s = 0;
     for (let k = 1; k < n; k++) if (walls[k] > walls[s]) s = k;
@@ -277,21 +281,36 @@ export function refineWalls(items: Item[], bins: number[][], workers: number): n
       .sort((a, b) => walls[a] - walls[b] || a - b)
       .slice(0, WALL_TARGETS);
     const candidates = [...result[s]].sort((a, b) => items[b].cost - items[a].cost || a - b).slice(0, WALL_CANDIDATES);
-    let best: { t: number; a: number; ws: number; wt: number; max: number; sq: number } | null = null;
+    let best = null as { t: number; a: number; b: number; ws: number; wt: number; max: number; sq: number } | null;
+    const consider = (t: number, a: number, b: number, ws: number, wt: number) => {
+      const max = Math.max(ws, wt);
+      const sq = ws * ws + wt * wt;
+      if (max < walls[s] && (!best || max < best.max || (max === best.max && sq < best.sq))) best = { t, a, b, ws, wt, max, sq };
+    };
     for (const a of candidates) {
       const ws = wallTime(items, result[s].filter((i) => i !== a), workers);
-      for (const t of targets) {
-        const wt = wallTime(items, [...result[t], a], workers);
-        const max = Math.max(ws, wt);
-        const sq = ws * ws + wt * wt;
-        if (max >= walls[s]) continue;
-        if (!best || max < best.max || (max === best.max && sq < best.sq)) best = { t, a, ws, wt, max, sq };
+      for (const t of targets) consider(t, a, -1, ws, wallTime(items, [...result[t], a], workers));
+    }
+    // No single move helps: swap a heavy item of the slowest shard for a lighter one.
+    swaps: for (const t of best ? [] : targets) {
+      const partners = [...result[t]].sort((x, y) => items[y].cost - items[x].cost || x - y).slice(0, WALL_CANDIDATES);
+      for (const a of candidates) {
+        for (const b of partners) {
+          if (items[b].cost >= items[a].cost) continue;
+          if ((visits -= result[s].length + result[t].length) < 0) break swaps;
+          const ws = wallTime(items, [...result[s].filter((i) => i !== a), b], workers);
+          consider(t, a, b, ws, wallTime(items, [...result[t].filter((i) => i !== b), a], workers));
+        }
       }
     }
     if (!best) break;
-    const { t, a } = best;
+    const { t, a, b } = best;
     result[s] = result[s].filter((i) => i !== a);
     result[t].push(a);
+    if (b !== -1) {
+      result[t] = result[t].filter((i) => i !== b);
+      result[s].push(b);
+    }
     walls[s] = best.ws;
     walls[t] = best.wt;
   }

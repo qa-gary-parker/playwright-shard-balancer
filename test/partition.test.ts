@@ -113,6 +113,14 @@ describe('partition', () => {
     expect(better).toBeGreaterThan(20);
   });
 
+  it('with several workers, swaps items when no single move shortens the slowest shard', () => {
+    // Balancing sums gives 3+7 | 2+2+7, and on two workers the second shard takes 9s. No single
+    // move helps. Swapping the 3 for a 7 runs both 7s side by side: 7s, and 4s for 3 | 2+2.
+    const p = partition(items([3, 2, 2, 7, 7]), 2, 2);
+    expect(p.bins).toEqual([[3, 4], [0, 1, 2]]);
+    expect(p.makespan).toBe(7);
+  });
+
   it('splits 10,000 items into 32 shards in under 3 seconds, at the lower bound', () => {
     const next = rng(3);
     const list = items(Array.from({ length: 10_000 }, () => Math.round(Math.exp(next() * 6) * 300)));

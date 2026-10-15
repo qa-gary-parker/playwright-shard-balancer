@@ -1,6 +1,6 @@
 {
   "name": "playwright-shard-balancer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Duration-balanced Playwright sharding: every shard finishes at about the same time, with no orchestration job.",
   "author": "Gary Parker",
   "repository": {

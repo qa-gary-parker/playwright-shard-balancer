@@ -37,7 +37,20 @@ function setupTime(atoms: Atom[], setup: SetupCosts): number {
 
 const toItems = (atoms: Atom[]): Item[] => atoms.map((a) => ({ cost: a.cost, order: a.order }));
 
-function build(strategy: Plan['strategy'], algorithm: string, atoms: Atom[], bins: number[][], workers: number, bound: number, setup: SetupCosts): Plan {
+// No plan beats this: the shard with the most work pays at least the cheapest setup, and the
+// shard with the largest atom pays that atom's setup.
+function bound(atoms: Atom[], shards: number, workers: number, setup: SetupCosts): number {
+  let cheapest = Infinity;
+  let single = 0;
+  for (const a of atoms) {
+    const own = setupTime([a], setup);
+    cheapest = Math.min(cheapest, own);
+    single = Math.max(single, a.cost + own);
+  }
+  return atoms.length ? Math.max(lowerBound(toItems(atoms), shards, workers) + cheapest, single) : 0;
+}
+
+function build(strategy: Plan['strategy'], algorithm: string, atoms: Atom[], bins: number[][], workers: number, setup: SetupCosts): Plan {
   const items = toItems(atoms);
   const shards = bins.map((bin, k) => {
     const list = [...bin].sort((a, b) => atoms[a].order - atoms[b].order).map((i) => atoms[i]);
@@ -61,7 +74,7 @@ function build(strategy: Plan['strategy'], algorithm: string, atoms: Atom[], bin
     shards,
     total_ms: atoms.reduce((acc, a) => acc + a.cost, 0),
     makespan_ms: Math.max(0, ...shards.map((s) => s.wall_ms)),
-    lower_bound_ms: bound,
+    lower_bound_ms: bound(atoms, bins.length, workers, setup),
     largest: largest && { id: largest.id, cost_ms: largest.cost },
     unknown_tests: atoms.reduce((acc, a) => acc + a.unknown, 0),
     sha: hash.digest('hex').slice(0, 12),
@@ -104,9 +117,9 @@ function familyBins(atoms: Atom[], shards: number, workers: number, setup: Setup
 
 export function balance(atoms: Atom[], shards: number, workers = 1, setup: SetupCosts = new Map()): Plan {
   const result = partition(toItems(atoms), shards, workers);
-  const candidates = [build('balanced', result.algorithm, atoms, result.bins, workers, result.lowerBound, setup)];
+  const candidates = [build('balanced', result.algorithm, atoms, result.bins, workers, setup)];
   const families = familyBins(atoms, shards, workers, setup);
-  if (families) candidates.push(build('balanced', 'setup-families', atoms, families, workers, result.lowerBound, setup));
+  if (families) candidates.push(build('balanced', 'setup-families', atoms, families, workers, setup));
   candidates.sort((a, b) => a.makespan_ms - b.makespan_ms || spread(a) - spread(b));
   return candidates[0];
 }
@@ -133,7 +146,7 @@ export function builtin(atoms: Atom[], shards: number, workers = 1, setup: Setup
     }
     current += sizes[index];
   });
-  return build('builtin', 'playwright', atoms, bins, workers, lowerBound(toItems(atoms), shards, workers), setup);
+  return build('builtin', 'playwright', atoms, bins, workers, setup);
 }
 
 export function summary(plan: Plan) {

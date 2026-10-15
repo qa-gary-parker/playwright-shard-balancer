@@ -31,6 +31,14 @@ describe('addSamples', () => {
     expect(addSamples(t, [{ key: 'k', durationMs: 2 }], '2026-10-15').tests.k).toEqual({ samples: [1, 2], seen: '2026-10-15' });
   });
 
+  it('keeps the newest 200 merged-input shas', () => {
+    const first = Array.from({ length: 150 }, (_, i) => `a${i}`);
+    const second = Array.from({ length: 100 }, (_, i) => `b${i}`);
+    const applied = addSamples(addSamples(emptyTimings(), [], '2026-10-15', first), [], '2026-10-15', second).applied!;
+    expect(applied).toHaveLength(200);
+    expect([applied[0], applied[199]]).toEqual(['a50', 'b99']);
+  });
+
   it('does not change its input', () => {
     const t = timings({ k: { samples: [1], seen: '2026-10-15' } });
     addSamples(t, [{ key: 'k', durationMs: 2 }], '2026-10-15');
@@ -60,6 +68,12 @@ describe('saveTimings and loadTimings', () => {
     const sha = saveTimings(file, a);
     expect(loadTimings(file)).toEqual({ timings: b, sha });
     expect(readFileSync(file, 'utf8')).toBe(serializeTimings(b));
+  });
+
+  it('creates the folder it saves into', () => {
+    const file = join(dir, 'new', 'folder', 't.json');
+    saveTimings(file, timings({}));
+    expect(loadTimings(file).timings).toEqual(timings({}));
   });
 
   it('treats a missing file as empty timings with no sha', () => {

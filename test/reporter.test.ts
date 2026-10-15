@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -9,7 +9,7 @@ import { balance } from '../src/plan.js';
 import { flattenReport, listing } from '../src/report.js';
 import type { RunRecord } from '../src/run.js';
 import { loadTimings } from '../src/timings.js';
-import { membership, reporterPath, runBalanced, runFixture, runRaw } from './helpers.js';
+import { type FixtureRun, membership, reporterPath, runBalanced, runFixture, runRaw } from './helpers.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'pwsb-reporter-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -22,11 +22,13 @@ const DURATIONS: Record<string, number> = {
 const durationOf = (title: string) => DURATIONS[title] ?? (title.startsWith('gamma') ? 20 : title.startsWith('epsilon') ? 60 : 1);
 
 let list: unknown;
-const writeTimings = (name: string, override: (title: string) => number | undefined = () => undefined) => {
+// override: a title's duration, or null to leave the test out of the timings.
+const writeTimings = (name: string, override: (title: string) => number | null | undefined = () => undefined) => {
   const tests: Record<string, { samples: number[]; seen: string }> = {};
   for (const t of flattenReport(list)) {
     const title = t.titles.at(-1)!;
-    tests[t.key] = { samples: [override(title) ?? durationOf(title)], seen: new Date().toISOString().slice(0, 10) };
+    const duration = override(title);
+    if (duration !== null) tests[t.key] = { samples: [duration ?? durationOf(title)], seen: new Date().toISOString().slice(0, 10) };
   }
   const file = join(dir, name);
   writeFileSync(file, JSON.stringify({ version: 1, tests }));
@@ -87,6 +89,27 @@ describe('balancing reporter', () => {
     expect(spread({})).toBe(1);
   });
 
+  it('keeps default-mode, nested serial and anonymous serial describes whole in a parallel file', () => {
+    const heavy = writeTimings('heavy-groups.json', (title) => (/^(d\d|o1|i1|gm anonymous)/.test(title) ? 1000 : undefined));
+    for (const n of [2, 3, 4]) {
+      const shards = shardsOf(n, { timings: heavy }).map((r) => membership(r.report));
+      const where = (pattern: RegExp) => shards.flatMap((s, k) => (s.some((key) => pattern.test(key)) ? [k] : []));
+      for (const group of [/gm default/, /gm outer/, /gm anonymous x/, /gm anonymous y/]) expect(where(group)).toHaveLength(1);
+      // The two anonymous serial describes are separate groups, so balancing puts them apart.
+      if (n === 4) expect(new Set([...where(/gm anonymous x/), ...where(/gm anonymous y/)]).size).toBe(2);
+    }
+  });
+
+  it('plans tests that have no timings yet as the offline plan does', () => {
+    const grep = ['--grep-invert', 'lock|gm '];
+    const partial = writeTimings('partial.json', (title) => (['three', 'gamma 3', 'zeta slow'].includes(title) ? null : undefined));
+    const listed = listing(runFixture(['--list', ...grep]).report);
+    const plan = balance(atomsFromTests(listed.tests, createEstimator(loadTimings(partial).timings), 'file', listed.deps), 3, 1);
+    expect(plan.unknown_tests).toBe(3);
+    const shards = shardsOf(3, { timings: partial, granularity: 'file' }, grep).map((r) => membership(r.report));
+    expect(shards).toEqual(plan.shards.map((s) => s.atoms.flatMap((a) => a.keys).sort()));
+  });
+
   it('keeps tests that share a lock on one shard', () => {
     for (const n of [2, 3, 4]) {
       const shards = shardsOf(n, { timings }).map((r) => membership(r.report));
@@ -138,22 +161,38 @@ describe('balancing reporter', () => {
   });
 
   it('packs for the workers option, and says so', () => {
-    const one = runBalanced(['--list', '--shard=1/2'], { timings }, { FULLY_PARALLEL: '1' });
-    const four = runBalanced(['--list', '--shard=1/2'], { timings, workers: 4 }, { FULLY_PARALLEL: '1' });
+    // The JSON list cannot show default-mode describes or locks, so leave them out of the offline plan.
+    const grep = ['--grep-invert', 'gm |lock'];
+    const listed = listing(runFixture(['--list', ...grep], { FULLY_PARALLEL: '1' }).report);
+    const offline = (workers: number) =>
+      balance(atomsFromTests(listed.tests, createEstimator(loadTimings(timings).timings), 'test', listed.deps), 2, workers).shards[0].atoms.flatMap((a) => a.keys).sort();
+    expect(offline(4)).not.toEqual(offline(1));
+    const shardOne = (options: Record<string, unknown>): FixtureRun => runBalanced(['--list', '--shard=1/2', ...grep], { timings, ...options }, { FULLY_PARALLEL: '1' });
+    const one = shardOne({});
+    const four = shardOne({ workers: 4 });
+    expect(membership(one.report)).toEqual(offline(1));
+    expect(membership(four.report)).toEqual(offline(4));
     expect(one.stderr).toContain(', 1 worker(s), plan ');
     expect(four.stderr).toContain(', 4 worker(s), plan ');
   });
 
-  it('in strict mode, fails the run instead of falling back', () => {
-    for (const [options, env] of [
-      [{ timings: join(dir, 'missing.json'), strict: true }, {}],
-      [{ timings: join(dir, 'missing.json') }, { PLAYWRIGHT_SHARD_BALANCER_STRICT: '1' }],
-    ] as const) {
-      const run = runBalanced(['--list', '--shard=1/2'], options, env);
-      expect(run.status).not.toBe(0);
-      expect(run.report.errors.map((e: { message: string }) => e.message).join('\n')).toMatch(/shard 1\/2: no timings file at .*strict mode stops the run/);
-      expect(membership(run.report)).toEqual([]);
-    }
+  it.each([
+    ['the option', { strict: true }, {}, () => 'missing.json', /no timings file at/],
+    ['the env var', {}, { PLAYWRIGHT_SHARD_BALANCER_STRICT: '1' }, () => 'missing.json', /no timings file at/],
+    ['the env var, over strict: false', { strict: false }, { PLAYWRIGHT_SHARD_BALANCER_STRICT: '1' }, () => 'missing.json', /no timings file at/],
+    ['the option, for a corrupt file', { strict: true }, {}, () => (writeFileSync(join(dir, 'strict-corrupt.json'), '{'), 'strict-corrupt.json'), /cannot read timings: .* is not valid JSON/],
+    ['the option, for an empty file', { strict: true }, {}, () => (writeFileSync(join(dir, 'strict-empty.json'), '{"version":1,"tests":{}}'), 'strict-empty.json'), /has no entries/],
+  ])('in strict mode from %s, fails the run instead of falling back', (_, options, env, file, reason) => {
+    const run = runBalanced(['--list', '--shard=1/2'], { timings: join(dir, file()), ...options }, env);
+    expect(run.status).toBe(1);
+    expect(run.report.errors.map((e: { message: string }) => e.message).join('\n')).toMatch(new RegExp(`shard 1/2: (timings file .* )?${reason.source}.*strict mode stops the run`));
+    expect(membership(run.report)).toEqual([]);
+  });
+
+  it('in strict mode, passes a shard run that has no tests to split', () => {
+    const run = runBalanced(['--list', '--shard=1/2', '--grep', 'no such test', '--pass-with-no-tests'], { timings, strict: true });
+    expect(run.status).toBe(0);
+    expect(run.stderr).toContain('playwright-shard-balancer: shard 1/2: no tests to balance');
   });
 
   it.each([
@@ -200,7 +239,7 @@ describe('run records and check', () => {
     const result = runCheck({ records: [record('mixed-1.json'), record('mixed-2.json')] });
     expect(result.ok).toBe(false);
     expect(result.problems.join('\n')).toMatch(/shards used different timings/);
-    expect(result.duplicates.length + Number(/distinct tests, but each saw/.test(result.problems.join('\n')))).toBeGreaterThan(0);
+    expect(result.problems).toContainEqual(expect.stringMatching(/^\d+ test\(s\) ran in more than one shard: /));
   });
 
   it('fails when one shard fell back to the built-in split', () => {
@@ -210,6 +249,38 @@ describe('run records and check', () => {
     expect(result.ok).toBe(false);
     expect(result.strategy).toBe('mixed');
     expect(result.problems[0]).toMatch(/shards split the suite differently: 1=balanced, 2=builtin \(no timings file at/);
+  });
+
+  it('records predicted wall times that match the offline plan, setup included', () => {
+    const grep = ['--grep-invert', 'lock|gm '];
+    const listed = listing(runFixture(['--list', ...grep]).report);
+    const plan = balance(atomsFromTests(listed.tests, createEstimator(loadTimings(timings).timings), 'file', listed.deps), 2, 1, new Map([['setup', durationOf('authenticate')]]));
+    runBalanced(['--shard=1/2', ...grep], { timings, granularity: 'file', record: record('predicted-{shard}.json') }, { FIXTURE_SCALE: '0' });
+    expect(readRecord(record('predicted-1.json')).predicted_ms).toEqual(plan.shards.map((s) => s.wall_ms));
+  });
+
+  it('puts --repeat-each copies on different shards, and check --list names a missing copy', () => {
+    const files = [1, 2].map((k) => {
+      const file = record(`alpha-repeat-${k}.json`);
+      runBalanced([`--shard=${k}/2`, '--repeat-each=2', '--grep', 'alpha'], { timings, record: file }, { FIXTURE_SCALE: '0' });
+      return file;
+    });
+    const records = files.map(readRecord);
+    expect(records.map((r) => r.strategy)).toEqual(['balanced', 'balanced']);
+    const target = '[chromium] › alpha.test.ts › alpha › one';
+    const repeats = records.map((r) => r.tests.filter((t) => t.key === target).map((t) => t.repeat));
+    expect(repeats.map((r) => r.length)).toEqual([1, 1]);
+    expect(repeats.flat().sort()).toEqual([0, 1]);
+
+    const listFile = record('alpha-repeat-list.json');
+    writeFileSync(listFile, JSON.stringify(runFixture(['--list', '--repeat-each=2', '--grep', 'alpha']).report));
+    for (const [k, r] of records.entries()) writeFileSync(files[k], JSON.stringify({ ...r, tests: r.tests.filter((t) => !(t.key === target && t.repeat === 1)) }));
+    expect(runCheck({ records: files, list: listFile }).missing).toEqual([`${target} (repeat 1)`]);
+  });
+
+  it('writes no run record for a --list run', () => {
+    runBalanced(['--list', '--shard=1/2'], { timings, record: record('list-only-{shard}.json') });
+    expect(existsSync(record('list-only-1.json'))).toBe(false);
   });
 
   it('fails when a shard record is missing', () => {

@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { cliPath, membership, runBalanced, runFixture } from './helpers.js';
+import { listing } from '../src/report.js';
+import { cliPath, fixtureConfig, membership, reporterPath, runBalanced, runFixture, runRaw } from './helpers.js';
 
 let dir: string;
 const path = (name: string) => join(dir, name);
@@ -18,6 +19,7 @@ function cli(args: string[]) {
 const NO_HELPERS = ['--grep-invert', 'shared suite'];
 
 // Shared by every test below, so each test can also run alone.
+let dropped: string;
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'pwsb-cli-'));
   write('list.json', runFixture(['--list']).report);
@@ -27,6 +29,9 @@ beforeAll(() => {
   write('report.json', runFixture([]).report);
   cli(['update', '--timings', 'base-timings.json', 'report.json']);
   for (const k of [1, 2]) runBalanced([`--shard=${k}/2`], { timings: path('base-timings.json'), record: path('ok-{shard}.json') });
+  const record = JSON.parse(readFileSync(path('ok-2.json'), 'utf8'));
+  dropped = record.tests.find((t: { setup?: boolean }) => !t.setup).key;
+  write('partial-2.json', { ...record, tests: record.tests.filter((t: { key: string }) => t.key !== dropped) });
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -48,7 +53,7 @@ describe('update', () => {
   });
 
   it('keeps tests that a shared helper defines in two specs apart', () => {
-    const timings = JSON.parse(readFileSync(path('fresh.json'), 'utf8'));
+    const timings = JSON.parse(readFileSync(path('base-timings.json'), 'utf8'));
     expect(timings.tests['[chromium] › helper-a.test.ts › shared suite › works']).toBeDefined();
     expect(timings.tests['[chromium] › helper-b.test.ts › shared suite › works']).toBeDefined();
   });
@@ -61,6 +66,17 @@ describe('update', () => {
     expect(result.json().samples).toBe(tests);
     const timings = JSON.parse(readFileSync(path('from-records.json'), 'utf8'));
     expect(timings.tests['[setup] › auth.setup.ts › authenticate'].samples).toHaveLength(1);
+  });
+
+  it('merges an input passed twice in one call once', () => {
+    const result = cli(['update', '--timings', 'twice.json', 'report.json', 'report.json']);
+    expect(result.json()).toMatchObject({ inputs: 2, skipped_inputs: 1 });
+    expect(JSON.parse(readFileSync(path('twice.json'), 'utf8')).tests['[chromium] › alpha.test.ts › alpha › one'].samples).toHaveLength(1);
+  });
+
+  it('creates the folder of a new timings file', () => {
+    expect(cli(['update', '--timings', 'new/folder/timings.json', 'report.json']).status).toBe(0);
+    expect(existsSync(path('new/folder/timings.json'))).toBe(true);
   });
 
   it('rejects an input that is neither a report nor a record', () => {
@@ -102,6 +118,21 @@ describe('simulate', () => {
     expect(run([])).toMatchObject({ granularity: 'test', builtin_granularity: 'test' });
     expect(run(['--granularity', 'file']).granularity).toBe('file');
     for (const r of run([]).rows) expect(r.balanced_ms).toBeLessThanOrEqual(r.builtin_ms);
+  });
+
+  it('refuses test granularity for a list from before Playwright 1.63, which cannot mark serial describes', () => {
+    const list = JSON.parse(readFileSync(path('list-parallel.json'), 'utf8'));
+    list.config.version = '1.62.0';
+    write('list-old-parallel.json', list);
+    const result = cli(['simulate', '--timings', 'base-timings.json', '--list', 'list-old-parallel.json', '--shards', '2']);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--granularity test needs a list from Playwright 1.63+');
+    expect(cli(['simulate', '--timings', 'base-timings.json', '--list', 'list-old-parallel.json', '--shards', '2', '--granularity', 'file']).status).toBe(0);
+  });
+
+  it('writes --out into a new folder', () => {
+    expect(cli(['simulate', '--timings', 'base-timings.json', '--list', 'list.json', '--shards', '2', '--out', 'new/sim.json']).status).toBe(0);
+    expect(JSON.parse(readFileSync(path('new/sim.json'), 'utf8')).rows).toHaveLength(1);
   });
 
   it('shows per-shard detail for one shard count, setup included', () => {
@@ -146,9 +177,19 @@ describe('plan', () => {
     expect(result.stderr).toMatch(/"\[chromium\] › helper-a\.test\.ts › shared suite › works" is defined in shared\.ts/);
   });
 
+  const spec = (title: string) => ({ title, file: 'x.test.ts', line: 1, column: 1, tests: [{ projectName: 'chromium', status: 'expected', results: [] }] });
+
+  it.each(['a › b', 'two\nlines', 'trailing ', ' leading'])('refuses the title %j, which a --test-list line cannot match', (title) => {
+    const list = JSON.parse(readFileSync(path('list-plan.json'), 'utf8'));
+    list.suites.push({ title: 'x.test.ts', file: 'x.test.ts', specs: [spec(title)] });
+    write('list-names.json', list);
+    const result = cli(['plan', '--timings', 'base-timings.json', '--list', 'list-names.json', '--shards', '2', '--out-dir', 'nope']);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('has "›", a line break, or a leading or trailing space in a name, which --test-list cannot express');
+  });
+
   it('refuses a test whose title path starts another test', () => {
     const list = JSON.parse(readFileSync(path('list-plan.json'), 'utf8'));
-    const spec = (title: string) => ({ title, file: 'x.test.ts', line: 1, column: 1, tests: [{ projectName: 'chromium', status: 'expected', results: [] }] });
     list.suites.push({ title: 'x.test.ts', file: 'x.test.ts', specs: [spec('x')], suites: [{ title: 'x', file: 'x.test.ts', specs: [spec('t')] }] });
     write('list-prefix.json', list);
     const result = cli(['plan', '--timings', 'base-timings.json', '--list', 'list-prefix.json', '--shards', '2', '--out-dir', 'nope']);
@@ -178,13 +219,32 @@ describe('check', () => {
   });
 
   it('exits 1 and names the tests no shard ran', () => {
-    const record = JSON.parse(readFileSync(path('ok-2.json'), 'utf8'));
-    const dropped = record.tests.find((t: { setup?: boolean }) => !t.setup).key;
-    record.tests = record.tests.filter((t: { key: string }) => t.key !== dropped);
-    write('partial-2.json', record);
     const result = cli(['check', 'ok-1.json', 'partial-2.json', '--list', 'list.json']);
     expect(result.status).toBe(1);
     expect(result.json().missing).toEqual([dropped]);
+    expect(result.stderr).toContain(`1 listed test(s) ran in no shard: ${dropped}`);
+  });
+
+  it('leaves setup tests out of a list from before Playwright 1.64, which does not mark setup projects', () => {
+    const list = JSON.parse(readFileSync(path('list.json'), 'utf8'));
+    delete list.config.filteredProjects;
+    write('list-unmarked.json', list);
+    const result = cli(['check', 'ok-1.json', 'ok-2.json', '--list', 'list-unmarked.json']);
+    expect(result.status).toBe(0);
+    expect(result.json().missing).toEqual([]);
+  });
+
+  it('checks runs of plan test lists, which have no --shard, against the list', () => {
+    cli(['plan', '--timings', 'base-timings.json', '--list', 'list-plan.json', '--shards', '2', '--out-dir', 'plan-run']);
+    for (const k of [1, 2]) {
+      runBalanced([...NO_HELPERS, '--test-list', path(`plan-run/shard-${k}.txt`)], { timings: path('base-timings.json'), record: path(`plan-run-${k}.json`) }, { FIXTURE_SCALE: '0' });
+    }
+    const listed = cli(['check', 'plan-run-1.json', 'plan-run-2.json', '--list', 'list-plan.json']);
+    expect(listed.stderr).toMatch(/ok: \d+ tests ran exactly once across 2 shard\(s\)/);
+    expect(listed.status).toBe(0);
+    const bare = cli(['check', 'plan-run-1.json', 'plan-run-2.json']);
+    expect(bare.status).toBe(1);
+    expect(bare.stderr).toContain('the records have no shard numbers (runs of `plan` test lists?); pass --list to check them');
   });
 
   it('exits 1 when tests did not run, here after max failures', () => {
@@ -193,7 +253,7 @@ describe('check', () => {
     const result = cli(['check', 'stopped-all.json']);
     expect(result.status).toBe(1);
     expect(result.json().not_run.length).toBeGreaterThan(0);
-    expect(result.stderr).toMatch(/\d+ test\(s\) did not run: the run was interrupted, stopped at max failures, or a setup project failed/);
+    expect(result.stderr).toMatch(/\d+ test\(s\) did not run \(interrupted, stopped at max failures, or a setup project failed\): \[chromium\] › /);
   });
 
   it('exits 1 without --list when the shards ran fewer tests than they saw', () => {
@@ -206,6 +266,33 @@ describe('check', () => {
     const result = cli(['check', 'report.json']);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('is not a run record');
+  });
+});
+
+describe('merge-reports', () => {
+  // The blob reporter empties its folder first, so each shard writes its own.
+  beforeAll(() => {
+    for (const k of [1, 2]) {
+      runRaw([`--shard=${k}/2`, '--reporter=blob'], { PLAYWRIGHT_BLOB_OUTPUT_DIR: path(`blob-${k}`), FIXTURE_SCALE: '0' });
+      cpSync(path(`blob-${k}`), path('blobs'), { recursive: true });
+    }
+  });
+  const merge = (args: string[], env: Record<string, string> = {}) =>
+    spawnSync('npx', ['playwright', 'merge-reports', '--config', fixtureConfig, ...args, path('blobs')], { cwd: dir, encoding: 'utf8', env: { ...process.env, ...env } });
+
+  it('learns one sample per setup test from a merged report, which does not mark setup projects', () => {
+    write('merged.json', merge(['--reporter', 'json']).stdout);
+    const merged = listing(JSON.parse(readFileSync(path('merged.json'), 'utf8')));
+    expect(merged.tests.filter((t) => t.key === '[setup] › auth.setup.ts › authenticate')).toHaveLength(2);
+    expect(cli(['update', '--timings', 'merged-timings.json', 'merged.json']).status).toBe(0);
+    const timings = JSON.parse(readFileSync(path('merged-timings.json'), 'utf8'));
+    expect(timings.tests['[setup] › auth.setup.ts › authenticate'].samples).toHaveLength(1);
+  });
+
+  it('writes no run record when the config reporters replay a merged run', () => {
+    const run = merge([], { PWSB_REPORTER: reporterPath, PWSB_OPTIONS: JSON.stringify({ record: path('merged-records/run-{shard}.json') }) });
+    expect(run.status).toBe(0);
+    expect(existsSync(path('merged-records'))).toBe(false);
   });
 });
 

@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { atomsFromTests, type Atom, type Granularity } from './atoms.js';
 import { createEstimator, type Estimator } from './estimate.js';
 import { balance, builtin, formatMs, type Plan, type SetupCosts, summary } from './plan.js';
-import { atLeast, testKey, isJsonReport, type Listing, listing, reportErrors, reportFullyParallel, reportVersion } from './report.js';
+import { atLeast, testKey, isJsonReport, type Listing, listing, type ReportTest, reportErrors, reportFullyParallel, reportVersion } from './report.js';
 import { check, type CheckResult, isRunRecord, type RunRecord, samplesFromReport, samplesFromRun, testId } from './run.js';
 import { addSamples, loadTimings, median, type Sample, saveTimings, sha } from './timings.js';
 
@@ -33,6 +33,8 @@ function setupCosts(listed: Listing, estimator: Estimator): SetupCosts {
 }
 
 const atomsOf = (listed: Listing, estimator: Estimator, granularity: Granularity): Atom[] => atomsFromTests(listed.tests, estimator, granularity, listed.deps);
+
+const SERIAL_LIST = '--granularity test needs a list from Playwright 1.63+, which marks serial describes; use --granularity file';
 
 function readTimings(file: string) {
   const loaded = loadTimings(file);
@@ -77,9 +79,16 @@ export function runUpdate(opts: { timings: string; inputs: string[]; today?: str
         else (setupSamples.get(s.key) ?? setupSamples.set(s.key, []).get(s.key)!).push(s.durationMs);
       }
     } else if (isJsonReport(data)) {
-      // A report merged from shards lists each setup test once per shard.
+      // A report merged from shards lists each setup test once per shard. Merged reports and those
+      // from Playwright before 1.64 do not mark setup projects, so without --repeat-each a key that
+      // repeats in one report is such a test: it gives one sample.
       const listed = listing(data);
-      samples.push(...samplesFromReport(listed.tests));
+      const repeatEach = new Map(((data as { config?: { projects?: { name: string; repeatEach?: number }[] } }).config?.projects ?? []).map((p) => [p.name, p.repeatEach ?? 1]));
+      const repeated = (t: ReportTest) => (repeatEach.get(t.project) ?? 1) > 1;
+      samples.push(...samplesFromReport(listed.tests.filter(repeated)));
+      const once = new Map<string, number[]>();
+      for (const s of samplesFromReport(listed.tests.filter((t) => !repeated(t)))) (once.get(s.key) ?? once.set(s.key, []).get(s.key)!).push(s.durationMs);
+      for (const [key, values] of once) samples.push({ key, durationMs: median(values) });
       for (const s of samplesFromReport(listed.setupTests)) (setupSamples.get(s.key) ?? setupSamples.set(s.key, []).get(s.key)!).push(s.durationMs);
       const errors = reportErrors(data);
       if (errors.length) warnings.push(`${input}: ${errors[0]}`);
@@ -162,6 +171,7 @@ export function runSimulate(opts: SimulateOptions): SimulateResult {
   // Without fullyParallel, Playwright's own groups are whole files.
   const builtinGranularity: Granularity = reportFullyParallel(listed.report) ? 'test' : 'file';
   const granularity = opts.granularity ?? builtinGranularity;
+  if (granularity === 'test' && !atLeast(reportVersion(listed.report), 1, 63)) throw new Error(SERIAL_LIST);
   const atoms = atomsOf(listed, estimator, granularity);
   const builtinAtoms = builtinGranularity === granularity ? atoms : atomsOf(listed, estimator, builtinGranularity);
   const overhead = opts.overheadMs ?? 0;
@@ -196,15 +206,14 @@ export type PlanResult = ReturnType<typeof summary> & { files: string[] };
 // For Playwright < 1.62, or CI that prefers one planning job: one --test-list file per shard.
 export function runPlan(opts: { list: string; timings: string; shards: number; workers: number; granularity: Granularity; outDir: string }): PlanResult {
   const listed = readList(opts.list);
-  if (opts.granularity === 'test' && !atLeast(reportVersion(listed.report), 1, 63)) {
-    throw new Error('--granularity test needs a list from Playwright 1.63+, which marks serial describes; use --granularity file');
-  }
+  if (opts.granularity === 'test' && !atLeast(reportVersion(listed.report), 1, 63)) throw new Error(SERIAL_LIST);
   const seen = new Set<string>();
   for (const t of listed.tests) {
     if (seen.has(t.key)) throw new Error(`"${t.key}" is listed twice (--repeat-each?); a --test-list cannot split repeats, use the reporter`);
     seen.add(t.key);
-    if (t.titles.some((title) => title.includes('›'))) {
-      throw new Error(`"${t.key}" has "›" in a title, which --test-list cannot express; use the reporter`);
+    // Playwright splits a --test-list line at "›" and at line breaks, and trims each part.
+    if ([t.project, t.file, ...t.titles].some((part) => part.includes('›') || /[\r\n]/.test(part) || part !== part.trim())) {
+      throw new Error(`"${t.key}" has "›", a line break, or a leading or trailing space in a name, which --test-list cannot express; use the reporter`);
     }
     if (t.definedIn) {
       throw new Error(`"${t.key}" is defined in ${t.definedIn}, and a --test-list line for it would select it in every spec that uses that file; use the reporter`);
@@ -239,8 +248,10 @@ export function runCheck(opts: { records: string[]; list?: string; summary?: str
   });
   let listed: string[] | undefined;
   if (opts.list) {
+    // A list from Playwright before 1.64 does not mark setup projects; the records do.
+    const setup = new Set(records.flatMap((r) => r.tests.filter((t) => t.setup).map((t) => t.key)));
     const seen = new Map<string, number>();
-    listed = readList(opts.list).tests.map((t) => {
+    listed = readList(opts.list).tests.filter((t) => !setup.has(t.key)).map((t) => {
       const repeat = seen.get(t.key) ?? 0;
       seen.set(t.key, repeat + 1);
       return testId({ key: t.key, repeat });

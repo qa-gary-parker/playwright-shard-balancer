@@ -7,7 +7,7 @@ import { emptyTimings } from '../src/timings.js';
 import { membership, runFixture } from './helpers.js';
 
 // The JSON list cannot show describe.configure modes or serial describes, so leave those out.
-const GREP_INVERT = ['--grep-invert', 'delta serial|epsilon'];
+const GREP_INVERT = ['--grep-invert', 'delta serial|epsilon|gm '];
 
 describe('builtin', () => {
   for (const fullyParallel of [false, true]) {

@@ -74,6 +74,7 @@ export type CheckResult = {
 };
 
 const testId = (t: { key: string; repeat: number }) => t.key + repeatSuffix(t.repeat);
+const names = (ids: string[]) => (ids.length > 10 ? `${ids.slice(0, 10).join(', ')} and ${ids.length - 10} more` : ids.join(', '));
 const corpusSha = (ids: string[]) => createHash('sha256').update([...ids].sort().join('\n')).digest('hex').slice(0, 12);
 
 // Proves a sharded run ran every test exactly once: all shards present, all on the same plan,
@@ -81,15 +82,20 @@ const corpusSha = (ids: string[]) => createHash('sha256').update([...ids].sort()
 export function check(records: RunRecord[], listed?: string[]): CheckResult {
   const problems: string[] = [];
   if (records.length === 0) problems.push('no run records');
-  const totals = new Set(records.map((r) => r.shard?.total ?? 1));
-  if (totals.size > 1) problems.push(`records disagree on the shard total: ${[...totals].join(', ')}`);
-  const total = Math.max(...totals, 1);
-  const seenShards = new Map<number, number>();
-  for (const r of records) seenShards.set(r.shard?.current ?? 1, (seenShards.get(r.shard?.current ?? 1) ?? 0) + 1);
-  const missingShards = Array.from({ length: total }, (_, k) => k + 1).filter((k) => !seenShards.has(k));
-  if (missingShards.length) problems.push(`missing records for shard ${missingShards.join(', ')}`);
-  const repeated = [...seenShards].filter(([, n]) => n > 1).map(([k]) => k);
-  if (repeated.length) problems.push(`more than one record for shard ${repeated.join(', ')}`);
+  // Runs of `plan` test lists have no --shard, so only a list can show that none is missing.
+  const unsharded = records.length > 1 && records.every((r) => !r.shard);
+  if (unsharded && !listed) problems.push('the records have no shard numbers (runs of `plan` test lists?); pass --list to check them');
+  if (!unsharded) {
+    const totals = new Set(records.map((r) => r.shard?.total ?? 1));
+    if (totals.size > 1) problems.push(`records disagree on the shard total: ${[...totals].join(', ')}`);
+    const total = Math.max(...totals, 1);
+    const seenShards = new Map<number, number>();
+    for (const r of records) seenShards.set(r.shard?.current ?? 1, (seenShards.get(r.shard?.current ?? 1) ?? 0) + 1);
+    const missingShards = Array.from({ length: total }, (_, k) => k + 1).filter((k) => !seenShards.has(k));
+    if (missingShards.length) problems.push(`missing records for shard ${missingShards.join(', ')}`);
+    const repeated = [...seenShards].filter(([, n]) => n > 1).map(([k]) => k);
+    if (repeated.length) problems.push(`more than one record for shard ${repeated.join(', ')}`);
+  }
 
   const strategies = new Set(records.map((r) => r.strategy));
   const strategy = strategies.size === 1 ? [...strategies][0] : 'mixed';
@@ -107,7 +113,7 @@ export function check(records: RunRecord[], listed?: string[]): CheckResult {
   const counts = new Map<string, number>();
   for (const r of records) for (const t of r.tests) if (!t.setup) counts.set(testId(t), (counts.get(testId(t)) ?? 0) + 1);
   const duplicates = [...counts].filter(([, n]) => n > 1).map(([id]) => id).sort();
-  if (duplicates.length) problems.push(`${duplicates.length} test(s) ran in more than one shard`);
+  if (duplicates.length) problems.push(`${duplicates.length} test(s) ran in more than one shard: ${names(duplicates)}`);
 
   let missing: string[] | null = null;
   if (listed) {
@@ -119,10 +125,10 @@ export function check(records: RunRecord[], listed?: string[]): CheckResult {
       problems.push(`the shards ran ${counts.size} distinct tests, but each saw ${count} before the split; pass --list to name the missing ones`);
     }
   }
-  if (missing?.length) problems.push(`${missing.length} listed test(s) ran in no shard`);
+  if (missing?.length) problems.push(`${missing.length} listed test(s) ran in no shard: ${names(missing)}`);
 
   const notRun = records.flatMap((r) => r.tests.filter((t) => !t.ran && !t.static_skip && !t.setup).map(testId)).sort();
-  if (notRun.length) problems.push(`${notRun.length} test(s) did not run: the run was interrupted, stopped at max failures, or a setup project failed`);
+  if (notRun.length) problems.push(`${notRun.length} test(s) did not run (interrupted, stopped at max failures, or a setup project failed): ${names(notRun)}`);
   const shards = records
     .map((r) => ({
       shard: r.shard?.current ?? 1,

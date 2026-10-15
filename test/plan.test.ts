@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Atom } from '../src/atoms.js';
+import { type Atom, mergeLocked } from '../src/atoms.js';
 import { balance, builtin, formatMs } from '../src/plan.js';
 
 const atom = (id: string, cost: number, deps: string[], order: number): Atom => ({
@@ -32,15 +32,26 @@ describe('balance with setup projects', () => {
   it('packs whole families when there are fewer shards than families', () => {
     const three = [...costly, atom('c1', 5_000, ['setup-c'], 4)];
     const plan = balance(three, 2, 1, new Map([...setup, ['setup-c', 10_000]]));
-    for (const s of plan.shards) {
-      const families = new Set(s.atoms.map((a) => a.deps[0]));
-      expect(s.setup_ms).toBe(families.size * 10_000);
-    }
-    expect(plan.shards.flatMap((s) => s.atoms).length).toBe(5);
+    expect(plan.algorithm).toBe('setup-families');
+    expect(plan.shards.map((s) => s.atoms.map((a) => a.id))).toEqual([['a1', 'a2', 'c1'], ['b1', 'b2']]);
   });
 
-  it('ignores families when no setup has a cost', () => {
-    expect(balance(costly, 2, 1, new Map()).algorithm).not.toBe('setup-families');
+  it('counts setup in the lower bound', () => {
+    // Twelve 10s groups on 3 shards need 40s each, and every shard also runs the 30s setup.
+    const atoms = Array.from({ length: 12 }, (_, i) => atom(`t${i}`, 10_000, ['setup'], i));
+    const plan = balance(atoms, 3, 1, new Map([['setup', 30_000]]));
+    expect(plan.lower_bound_ms).toBe(70_000);
+    expect(plan.makespan_ms).toBe(70_000);
+  });
+});
+
+describe('mergeLocked', () => {
+  it('joins groups that share a lock through another group', () => {
+    // A and B share x, B and C share y: all three must go to one shard.
+    const atoms = [atom('A', 1, [], 0), atom('C', 1, [], 1), atom('B', 1, [], 2)];
+    const merged = mergeLocked(atoms, new Map([['A', ['x']], ['C', ['y']], ['B', ['x', 'y']]]));
+    expect(merged.atoms.map((a) => a.id)).toEqual(['A + 2 locked']);
+    expect(merged.members.get('A + 2 locked')).toEqual(['A', 'C', 'B']);
   });
 });
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { Granularity } from './atoms.js';
 import { parseDuration, parseShards, runCheck, runPlan, runSimulate, runUpdate } from './commands.js';
@@ -37,8 +38,9 @@ function required(values: Record<string, string | undefined>, ...names: string[]
 
 function emit(data: unknown, out?: string) {
   const json = `${JSON.stringify(data, null, 2)}\n`;
-  if (out) writeFileSync(out, json);
-  else process.stdout.write(json);
+  if (!out) return void process.stdout.write(json);
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, json);
 }
 
 const log = (message: string) => process.stderr.write(`playwright-shard-balancer: ${message}\n`);

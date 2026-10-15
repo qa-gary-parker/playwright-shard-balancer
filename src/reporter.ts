@@ -40,8 +40,9 @@ function fileSuiteOf(test: TestCase): Suite | undefined {
   return suite;
 }
 
-// Mirrors Playwright's createTestGroups: tests outside parallel mode stay with their file;
+// Follows Playwright's createTestGroups: tests outside parallel mode stay with their file;
 // in parallel mode each test stands alone, except inside a serial or default-mode describe.
+// Playwright also chunks parallel tests under beforeAll/afterAll hooks; this splits them per test.
 function groupOf(test: TestCase, base: string, exact: boolean): string {
   if (!exact) return base;
   let insideParallel = false;
@@ -51,7 +52,9 @@ function groupOf(test: TestCase, base: string, exact: boolean): string {
     insideParallel ||= parent._parallelMode === 'parallel';
   }
   if (!insideParallel) return base;
-  if (sequential) return `${base} › ${sequential.titlePath().slice(3).join(' › ')}`;
+  if (sequential?.type === 'file') return base;
+  // The location keeps apart anonymous describes and a describe titled like a test.
+  if (sequential) return `${base} › ${sequential.titlePath().slice(3).join(' › ')}@${sequential.location?.line}:${sequential.location?.column}`;
   return `${base} › ${test.titlePath().slice(3).join(' › ')}`;
 }
 
@@ -139,6 +142,7 @@ export default class ShardBalancer implements Reporter {
   private durations = new Map<TestCase, number>();
   private firstStart = Infinity;
   private lastEnd = -Infinity;
+  private preprocessed = false;
 
   constructor(options: ShardBalancerOptions = {}) {
     if (options.granularity !== undefined && options.granularity !== 'auto' && options.granularity !== 'file') {
@@ -155,13 +159,14 @@ export default class ShardBalancer implements Reporter {
   }
 
   async preprocess({ config, suite, testRun }: PreprocessParams): Promise<void> {
+    this.preprocessed = true;
     this.config = config;
     this.record.playwright = config.version;
     if (!config.shard) return;
     this.record.shard = { current: config.shard.current, total: config.shard.total };
     this.record.strategy = 'builtin';
     const shardLabel = `shard ${config.shard.current}/${config.shard.total}`;
-    const strict = this.options.strict ?? process.env[STRICT_ENV] === '1';
+    const strict = this.options.strict || process.env[STRICT_ENV] === '1';
     const fallback = (reason: string) => {
       if (strict) throw new Error(`playwright-shard-balancer: ${shardLabel}: ${reason}; strict mode stops the run rather than split it differently from other shards`);
       this.record.reason = reason;
@@ -179,10 +184,15 @@ export default class ShardBalancer implements Reporter {
     const estimator = createEstimator(loaded.timings);
     const corpus = buildCorpus(config, suite, estimator, this.options.granularity ?? 'auto');
     this.record.corpus = { tests: corpus.keys.length, sha: corpusSha(corpus.keys) };
+    // With nothing to split, no shard can split it differently, so strict mode does not apply.
+    if (corpus.atoms.length === 0) {
+      this.record.reason = 'no tests to balance';
+      log(`${shardLabel}: no tests to balance`);
+      return;
+    }
     if (readError) return fallback(`cannot read timings: ${readError}`);
     if (loaded.sha === null) return fallback(`no timings file at ${path}`);
     if (estimator.knownCount === 0) return fallback(`timings file ${path} has no entries`);
-    if (corpus.atoms.length === 0) return fallback('no tests to balance');
 
     const workers = this.options.workers ?? 1;
     const plan: Plan = balance(corpus.atoms, config.shard.total, workers, corpus.setup);
@@ -233,6 +243,10 @@ export default class ShardBalancer implements Reporter {
 
   async onEnd(result: FullResult): Promise<void> {
     if (!this.options.record || !this.config) return;
+    // Playwright 1.62+ calls preprocess on every test run, so without it this is merge-reports.
+    // A run that passed without starting any of its tests is --list. Neither is a shard's run.
+    if (!this.preprocessed && atLeast(this.config.version, 1, 62)) return;
+    if (result.status === 'passed' && this.tests.length > 0 && this.durations.size === 0) return;
     const rootDir = this.config.rootDir;
     const tests: RunTest[] = this.tests.map((test) => {
       const project = test.parent.project()?.name ?? '';

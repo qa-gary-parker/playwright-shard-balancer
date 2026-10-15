@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 export const MAX_SAMPLES = 5;
 export const PRUNE_AFTER_DAYS = 30;
@@ -59,6 +60,7 @@ export function serializeTimings(timings: Timings): string {
 export function saveTimings(path: string, timings: Timings): string {
   const text = serializeTimings(timings);
   const tmp = `${path}.${process.pid}.tmp`;
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(tmp, text);
   renameSync(tmp, path);
   return sha(text);

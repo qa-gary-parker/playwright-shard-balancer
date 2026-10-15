@@ -61,6 +61,15 @@ describe('partition', () => {
     expect(byOrder(partition(shuffled, 5), shuffled)).toEqual(byOrder(partition(list, 5), list));
   });
 
+  it('gives the same shards on every call when costs tie', () => {
+    const next = rng(21);
+    for (let t = 0; t < 300; t++) {
+      const list = items(Array.from({ length: 6 + Math.floor(next() * 40) }, () => 1 + Math.floor(next() * 30)));
+      const n = 2 + Math.floor(next() * 5);
+      expect(JSON.stringify(partition(list, n).bins)).toBe(JSON.stringify(partition(list, n).bins));
+    }
+  });
+
   it('reaches the lower bound when the items split evenly', () => {
     const list = items([5, 5, 5, 5, 5, 5, 5, 5]);
     const p = partition(list, 4);
@@ -111,6 +120,21 @@ describe('partition', () => {
     const p = partition(list, 32);
     expect(performance.now() - started).toBeLessThan(3000);
     expect(p.makespan).toBe(p.lowerBound);
+  });
+
+  it('searches a suite of thousands of equal-cost groups without running out of stack', () => {
+    // 6,001 groups of 7 ms cannot reach the even-split bound, so the search runs its full budget.
+    const list = items(Array.from({ length: 6001 }, () => 7));
+    const p = partition(list, 4);
+    expect(p.bins.flat().sort((a, b) => a - b)).toEqual([...list.keys()]);
+    expect(p.makespan).toBe(1501 * 7);
+  });
+
+  it('finds the optimum when many groups cost nothing', () => {
+    // Statically skipped tests cost 0; they must not use up the search before it reaches the optimum.
+    const costs = [1900, 4421, 0, 3440, 3515, 1403, 1508, 4535, 0, 4647, 2452, 0, 1719, 0, 0, 0, 0, 484, 2123, 1964, 0, 1476, 3236, 3122, 2640, 4700, 0, 3786,
+      4103, 0, 0, 3629, 0, 0, 666, 519, 1455, 0, 0, 3822];
+    expect(partition(items(costs), 4).makespan).toBe(16822);
   });
 });
 

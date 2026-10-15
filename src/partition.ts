@@ -158,28 +158,41 @@ function search(items: Item[], n: number, sorted: number[], incumbent: number): 
   let best = incumbent;
   let bestAssign: number[] | null = null;
   let nodes = 0;
-  const visit = (k: number, maxLoad: number): boolean => {
-    if (++nodes > SEARCH_NODES) return true;
-    if (k === m) {
+  // One frame per placed item, on an explicit stack: recursion would overflow on large suites.
+  const frames: { maxLoad: number; order: number[]; next: number; last: number; placed: number }[] = [];
+  const open = (maxLoad: number): 'open' | 'back' | 'stop' => {
+    if (++nodes > SEARCH_NODES) return 'stop';
+    if (maxLoad >= best) return 'back';
+    if (frames.length === m) {
       best = maxLoad;
       bestAssign = [...assign];
-      return best <= floor;
+      return best <= floor ? 'stop' : 'back';
     }
-    const order = [...loads.keys()].sort((a, b) => loads[a] - loads[b] || a - b);
-    let last = -1;
-    for (const s of order) {
-      if (loads[s] === last) continue;
-      last = loads[s];
-      if (loads[s] + cost[k] >= best) break;
-      loads[s] += cost[k];
-      assign[k] = s;
-      const stop = visit(k + 1, Math.max(maxLoad, loads[s]));
-      loads[s] -= cost[k];
-      if (stop) return true;
-    }
-    return false;
+    frames.push({ maxLoad, order: [...loads.keys()].sort((a, b) => loads[a] - loads[b] || a - b), next: 0, last: -1, placed: -1 });
+    return 'open';
   };
-  visit(0, 0);
+  let state = open(0);
+  while (state !== 'stop' && frames.length) {
+    const k = frames.length - 1;
+    const frame = frames[k];
+    if (frame.placed !== -1) loads[frame.placed] -= cost[k];
+    frame.placed = -1;
+    while (frame.next < frame.order.length) {
+      const s = frame.order[frame.next++];
+      if (loads[s] === frame.last) continue;
+      frame.last = loads[s];
+      if (loads[s] + cost[k] >= best) frame.next = frame.order.length;
+      else frame.placed = s;
+      break;
+    }
+    if (frame.placed === -1) {
+      frames.pop();
+      continue;
+    }
+    loads[frame.placed] += cost[k];
+    assign[k] = frame.placed;
+    state = open(Math.max(frame.maxLoad, loads[frame.placed]));
+  }
   if (!bestAssign) return null;
   const bins: number[][] = Array.from({ length: n }, () => []);
   (bestAssign as number[]).forEach((s, k) => bins[s].push(sorted[k]));

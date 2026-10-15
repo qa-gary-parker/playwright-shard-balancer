@@ -109,6 +109,7 @@ jobs:
 The full workflow is in [examples/github-actions.yml](examples/github-actions.yml).
 
 - `restore` takes the newest timings from the cache and pins that copy to the workflow run. Every shard, and every re-run of a failed shard, plans from the same bytes. On a first run it pins an empty file, so every shard uses the built-in split. Once the pinned file has timings, it turns strict mode on.
+- On a pull request from a fork, the cache is read-only, so `restore` cannot pin. It writes empty timings instead, and every shard uses the built-in split.
 - `finish` merges the durations into the newest cached timings with `update`, runs `check` (job summary included), and saves the result for the next run. It saves even when `check` fails, but not when `update` fails. It runs the project's installed CLI, so install the project's dependencies in that job too. Without an installed CLI it runs `npx playwright-shard-balancer@<version>`; set the `version` input to pin it.
 - `overwrite: true` lets a re-run of a failed shard replace that shard's record.
 - The actions' `path` and `records` are relative to the workspace. The reporter's `timings` and `record` are relative to the config file. With the config in `e2e/`, pass `path: e2e/shard-timings.json` to both actions and upload `e2e/shard-records/`.

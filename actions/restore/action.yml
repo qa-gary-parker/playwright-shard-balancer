@@ -14,19 +14,22 @@ outputs:
 runs:
   using: composite
   steps:
+    # A pull request from a fork gets a read-only cache, so it cannot pin. It skips the cache and
+    # writes empty timings, so every shard uses the built-in split.
     - id: pinned
+      if: github.event.pull_request.head.repo.fork != true
       uses: actions/cache/restore@v6
       with:
         path: ${{ inputs.path }}
         key: ${{ inputs.prefix }}-pin-${{ github.run_id }}
     - id: latest
-      if: steps.pinned.outputs.cache-hit != 'true'
+      if: github.event.pull_request.head.repo.fork != true && steps.pinned.outputs.cache-hit != 'true'
       uses: actions/cache/restore@v6
       with:
         path: ${{ inputs.path }}
         key: ${{ inputs.prefix }}-timings-${{ github.run_id }}
         restore-keys: ${{ inputs.prefix }}-timings-
-    # No timings yet: pin an empty file, so a re-run of this workflow also uses the built-in split.
+    # No timings yet, or a fork: write an empty file. Pinned, it makes a re-run of this workflow use the built-in split too.
     - if: steps.pinned.outputs.cache-hit != 'true' && steps.latest.outputs.cache-matched-key == ''
       shell: bash
       env:
@@ -35,23 +38,23 @@ runs:
         mkdir -p "$(dirname "$TIMINGS")"
         printf '{"version":1,"tests":{}}\n' > "$TIMINGS"
     # Only the first shard's save succeeds; every shard then reads the pin back, so all use one copy.
-    - if: steps.pinned.outputs.cache-hit != 'true'
+    - if: github.event.pull_request.head.repo.fork != true && steps.pinned.outputs.cache-hit != 'true'
       uses: actions/cache/save@v6
       continue-on-error: true
       with:
         path: ${{ inputs.path }}
         key: ${{ inputs.prefix }}-pin-${{ github.run_id }}
     - id: confirm
-      if: steps.pinned.outputs.cache-hit != 'true'
+      if: github.event.pull_request.head.repo.fork != true && steps.pinned.outputs.cache-hit != 'true'
       uses: actions/cache/restore@v6
       with:
         path: ${{ inputs.path }}
         key: ${{ inputs.prefix }}-pin-${{ github.run_id }}
     # The winning shard's save may still be uploading.
-    - if: steps.pinned.outputs.cache-hit != 'true' && steps.confirm.outputs.cache-hit != 'true'
+    - if: github.event.pull_request.head.repo.fork != true && steps.pinned.outputs.cache-hit != 'true' && steps.confirm.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 20
-    - if: steps.pinned.outputs.cache-hit != 'true' && steps.confirm.outputs.cache-hit != 'true'
+    - if: github.event.pull_request.head.repo.fork != true && steps.pinned.outputs.cache-hit != 'true' && steps.confirm.outputs.cache-hit != 'true'
       uses: actions/cache/restore@v6
       with:
         path: ${{ inputs.path }}

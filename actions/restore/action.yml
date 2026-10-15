@@ -2,7 +2,7 @@ name: Restore Playwright shard timings
 description: Restores the newest timings file and pins it to this workflow run, so every shard and every re-run plans from the same bytes.
 inputs:
   path:
-    description: Timings file, as named in the reporter's "timings" option.
+    description: Timings file, relative to the workspace. The reporter's "timings" option is relative to the config file.
     default: shard-timings.json
   prefix:
     description: Cache key prefix. Use one per suite when a repo shards more than one.
@@ -31,7 +31,9 @@ runs:
       shell: bash
       env:
         TIMINGS: ${{ inputs.path }}
-      run: printf '{"version":1,"tests":{}}\n' > "$TIMINGS"
+      run: |
+        mkdir -p "$(dirname "$TIMINGS")"
+        printf '{"version":1,"tests":{}}\n' > "$TIMINGS"
     # Only the first shard's save succeeds; every shard then reads the pin back, so all use one copy.
     - if: steps.pinned.outputs.cache-hit != 'true'
       uses: actions/cache/save@v6
@@ -65,4 +67,6 @@ runs:
           echo "PLAYWRIGHT_SHARD_BALANCER_STRICT=1" >> "$GITHUB_ENV"
         else
           echo "found=false" >> "$GITHUB_OUTPUT"
+          # An earlier restore in this job, for another suite, may have turned strict mode on.
+          echo "PLAYWRIGHT_SHARD_BALANCER_STRICT=0" >> "$GITHUB_ENV"
         fi

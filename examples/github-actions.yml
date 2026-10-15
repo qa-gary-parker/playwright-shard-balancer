@@ -31,6 +31,7 @@ jobs:
           name: shard-record-${{ matrix.shard }}
           path: shard-records/
           retention-days: 1
+          overwrite: true
 
   shard-timings:
     needs: e2e

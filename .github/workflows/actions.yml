@@ -29,7 +29,13 @@ jobs:
         with:
           path: test/fixtures/pw/shard-timings.json
           prefix: pwsb-selftest
-      - run: echo "timings found=${{ steps.restore.outputs.found }}, strict=${PLAYWRIGHT_SHARD_BALANCER_STRICT:-0}"
+      # Strict mode must be on exactly when the pinned timings have entries.
+      - env:
+          FOUND: ${{ steps.restore.outputs.found }}
+        run: |
+          echo "timings found=$FOUND, strict=${PLAYWRIGHT_SHARD_BALANCER_STRICT:-0}"
+          expected=0; [ "$FOUND" = true ] && expected=1
+          test "${PLAYWRIGHT_SHARD_BALANCER_STRICT:-0}" = "$expected"
       - run: npx playwright test --config test/fixtures/pw/playwright.config.ts --shard=${{ matrix.shard }}/${{ strategy.job-total }} > /dev/null
         env:
           PWSB_REPORTER: ${{ github.workspace }}/dist/reporter.js

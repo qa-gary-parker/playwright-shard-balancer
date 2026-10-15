@@ -2,10 +2,10 @@ name: Check and learn Playwright shard timings
 description: Proves every test ran exactly once across the shards, writes predicted against actual shard times to the job summary, then merges the run's durations into the cached timings.
 inputs:
   records:
-    description: Directory holding every shard's run record (the reporter's "record" files).
+    description: Directory holding every shard's run record (the reporter's "record" files), relative to the workspace.
     default: shard-records
   path:
-    description: Timings file, as named in the reporter's "timings" option.
+    description: Timings file, relative to the workspace. The reporter's "timings" option is relative to the config file.
     default: shard-timings.json
   prefix:
     description: Cache key prefix, the same as in the restore action.

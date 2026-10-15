@@ -57,7 +57,7 @@ All shards compute the same plan independently. The log line shows the timings s
 
 **Estimates.** A test costs the median of its last 5 passing durations, retries included. A new test costs the median of its describe, else its file, else its project, else the suite. A test skipped before it runs costs nothing. Failed and interrupted runs are not sampled, because a failure often runs to the timeout.
 
-**Groups.** Tests in a file that is not in parallel mode stay together. In parallel mode (`fullyParallel` or `describe.configure({ mode: 'parallel' })`) each test can go to any shard, except that a serial describe stays together. Tests that share a lock go to one shard, since shards run at the same time. Setup and teardown projects are never split: they run on every shard whose tests need them, and their time counts on each of those shards.
+**Groups.** Tests in a file that is not in parallel mode stay together. In parallel mode (`fullyParallel` or `describe.configure({ mode: 'parallel' })`) each test can go to any shard, except that a serial describe stays together. Tests that share a lock go to one shard, since shards run at the same time. Setup and teardown projects are never split: they run on every shard whose tests need them, and their time counts on each of those shards. Parallel tests under a `beforeAll` or `afterAll` hook are split per test, where Playwright chunks them; each shard that gets some of them runs the hook.
 
 **Splitting.** Largest-first and Karmarkar-Karp starts, each refined by moves and swaps, then a branch-and-bound search with a fixed node budget. With more than one worker per shard, a second pass packs each shard for wall time. When projects need different setup projects, it also tries giving each family its own shards, and keeps whichever plan finishes first.
 
@@ -91,6 +91,7 @@ jobs:
         with:
           name: shard-record-${{ matrix.shard }}
           path: shard-records/
+          overwrite: true
 
   shard-timings:
     needs: e2e
@@ -108,10 +109,14 @@ The full workflow is in [examples/github-actions.yml](examples/github-actions.ym
 
 - `restore` takes the newest timings from the cache and pins that copy to the workflow run. Every shard, and every re-run of a failed shard, plans from the same bytes. On a first run it pins an empty file, so every shard uses the built-in split. Once the pinned file has timings, it turns strict mode on.
 - `finish` runs `check` (job summary included), merges the durations with `update`, and saves the result for the next run. It runs the project's installed CLI, or `npx` otherwise.
+- `overwrite: true` lets a re-run of a failed shard replace that shard's record.
+- The actions' `path` and `records` are relative to the workspace. The reporter's `timings` and `record` are relative to the config file. With the config in `e2e/`, pass `path: e2e/shard-timings.json` to both actions and upload `e2e/shard-records/`.
+- A matrix with another dimension, such as browser and shard, needs its own `prefix`, record folder and `finish` job for each browser.
+- Run the shards and `finish` on the same OS family. The cache does not share entries between Windows and other runners.
 
 ### Other CI
 
-The reporter needs only the timings file on each shard. Restore one copy per pipeline, pass it to every shard, and run `update` and `check` on the collected records afterwards. GitLab, CircleCI and Buildkite give the shard as `CI_NODE_INDEX`/`CI_NODE_TOTAL`, `CIRCLE_NODE_INDEX`/`CIRCLE_NODE_TOTAL` or `BUILDKITE_PARALLEL_JOB`/`BUILDKITE_PARALLEL_JOB_COUNT`; pass it as `--shard`.
+The reporter needs only the timings file on each shard. Restore one copy per pipeline, pass it to every shard, and run `update` and `check` on the collected records afterwards. GitLab, CircleCI and Buildkite give the shard as `CI_NODE_INDEX`/`CI_NODE_TOTAL`, `CIRCLE_NODE_INDEX`/`CIRCLE_NODE_TOTAL` or `BUILDKITE_PARALLEL_JOB`/`BUILDKITE_PARALLEL_JOB_COUNT`; pass it as `--shard`. CircleCI and Buildkite count from 0, so pass `--shard=$((CIRCLE_NODE_INDEX + 1))/$CIRCLE_NODE_TOTAL` or `--shard=$((BUILDKITE_PARALLEL_JOB + 1))/$BUILDKITE_PARALLEL_JOB_COUNT`.
 
 ## Commands
 
@@ -123,9 +128,9 @@ playwright-shard-balancer check    <run-record.json>... [--list <list.json>] [--
 ```
 
 - `update` merges durations from Playwright JSON reports or run records. An input it has already merged is skipped, so a re-uploaded artifact is not counted twice. Merge blob reports first with `npx playwright merge-reports --reporter json`.
-- `simulate` prints, per shard count, the slowest shard with the built-in split and with balancing, and the lower bound. It splits by test for a `fullyParallel` suite and by file otherwise, unless `--granularity` says. `--workers` matches your CI's workers per shard. `--overhead` adds per-shard CI time (install, browsers) to `elapsed_ms` and `machine_ms`. `--target` picks the fewest shards that finish in time.
-- `plan` writes `shard-<k>.txt` for `npx playwright test --test-list shard-<k>.txt`, plus `plan.json`. A `--test-list` line selects by title prefix and by the file that defines a test, so `plan` refuses a list where that would run a test twice: `--repeat-each` copies, titles that contain `›`, tests defined in a shared helper file, and a test whose title path starts another's. `--granularity test` needs a list from Playwright 1.63+, which marks serial describes.
-- `check` exits 1 when a shard record is missing, the shards used different timings or plans, some shards fell back to the built-in split and others did not, a test ran in two shards, a test ran in none, or a test did not run (interrupted, max failures, or a failed setup project). `--list` names the missing tests. `--summary` appends a markdown table; pass `$GITHUB_STEP_SUMMARY`.
+- `simulate` prints, per shard count, the slowest shard with the built-in split and with balancing, and the lower bound. It splits by test for a `fullyParallel` suite and by file otherwise, unless `--granularity` says. Splitting by test needs a list from Playwright 1.63+, which marks serial describes. `--workers` matches your CI's workers per shard. `--overhead` adds per-shard CI time (install, browsers) to `elapsed_ms` and `machine_ms`. `--target` picks the fewest shards that finish in time.
+- `plan` writes `shard-<k>.txt` for `npx playwright test --test-list shard-<k>.txt`, plus `plan.json`. A `--test-list` line selects by title prefix and by the file that defines a test, so `plan` refuses a list where that would run a test twice or not at all: `--repeat-each` copies, names that contain `›` or a line break or that start or end with a space, tests defined in a shared helper file, and a test whose title path starts another's. `--granularity test` needs a list from Playwright 1.63+, which marks serial describes. Runs of these lists have no `--shard`: give each job its own `record` path, and run `check` with `--list`.
+- `check` exits 1 when a shard record is missing, the shards used different timings or plans, some shards fell back to the built-in split and others did not, a test ran in two shards, a test ran in none, or a test did not run (interrupted, max failures, or a failed setup project). It names up to 10 tests for each problem. `--list` finds tests that ran nowhere. `--summary` appends a markdown table; pass `$GITHUB_STEP_SUMMARY`.
 
 Exit codes: 0 done, 1 error or failed check, 2 bad arguments.
 
@@ -173,7 +178,11 @@ As of 2026-10-15, from each tool's published source and docs.
 - `auto` groups read Playwright internals: `_parallelMode` for parallel and serial groups, and `_locks` for lock groups. If a release removes `_parallelMode`, the reporter keeps whole files. If it removes `_locks` on Playwright 1.63+, lock groups may split. Either way the log line says so.
 - The JSON list that `simulate` and `plan` read does not show `describe.configure({ mode: 'default' })` inside a parallel file, or locks. Use `--granularity file` there, or the reporter.
 - Workers in a shard take groups in Playwright's load order; the plan's wall-time estimate assumes that order.
-- `plan` cannot split `--repeat-each` copies or titles that contain `›`. It refuses such lists.
+- `plan` cannot express `--repeat-each` copies, or names that contain `›` or a line break or that start or end with a space. It refuses such lists.
+- A JSON list from Playwright before 1.64 does not say which projects are setup projects, so `simulate` and `plan` treat their tests as ordinary tests. `check --list` takes them from the run records.
+- `simulate` models Playwright's built-in split from the list, which does not show worker-fixture groups or hook chunks. Its built-in times are estimates.
+- Tests are keyed by project name, so give every project a unique name.
+- Retry a failed shard by re-running its job, not with `--last-failed` in the same job: the second run overwrites the shard's record.
 - Predicted times leave out Playwright's start-up; the job summary shows both test time and the whole run.
 
 ## License

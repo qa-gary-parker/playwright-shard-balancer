@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Atom } from './atoms.js';
-import { type Item, lowerBound, partition, wallTime } from './partition.js';
+import { type Item, lowerBound, partition, refineWalls, wallTime } from './partition.js';
 
 // Setup and teardown projects: the time each adds to every shard that needs it.
 export type SetupCosts = Map<string, number>;
@@ -115,11 +115,33 @@ function familyBins(atoms: Atom[], shards: number, workers: number, setup: Setup
   return bins;
 }
 
+// Largest first, each atom to the shard where it ends soonest, counting the setup the shard does
+// not run yet. The other candidates split by work alone or by whole family.
+function greedyBins(atoms: Atom[], shards: number, setup: SetupCosts): number[][] | null {
+  if (!atoms.some((a) => a.deps.some((d) => setup.get(d)))) return null;
+  const bins: number[][] = Array.from({ length: shards }, () => []);
+  const loads = new Array<number>(shards).fill(0);
+  const hosted = bins.map(() => new Set<string>());
+  const sorted = [...atoms.keys()].sort((a, b) => atoms[b].cost - atoms[a].cost || atoms[a].order - atoms[b].order || a - b);
+  for (const i of sorted) {
+    const added = (s: number) => atoms[i].deps.reduce((acc, d) => acc + (hosted[s].has(d) ? 0 : (setup.get(d) ?? 0)), 0);
+    let best = 0;
+    for (let s = 1; s < shards; s++) if (loads[s] + added(s) < loads[best] + added(best)) best = s;
+    loads[best] += atoms[i].cost + added(best);
+    for (const d of atoms[i].deps) hosted[best].add(d);
+    bins[best].push(i);
+  }
+  return bins;
+}
+
 export function balance(atoms: Atom[], shards: number, workers = 1, setup: SetupCosts = new Map()): Plan {
   const result = partition(toItems(atoms), shards, workers);
   const candidates = [build('balanced', result.algorithm, atoms, result.bins, workers, setup)];
   const families = familyBins(atoms, shards, workers, setup);
   if (families) candidates.push(build('balanced', 'setup-families', atoms, families, workers, setup));
+  const greedy = greedyBins(atoms, shards, setup);
+  if (greedy && workers > 1) candidates.push(build('balanced', 'setup-greedy+workers', atoms, refineWalls(toItems(atoms), greedy, workers), workers, setup));
+  else if (greedy) candidates.push(build('balanced', 'setup-greedy', atoms, greedy, workers, setup));
   candidates.sort((a, b) => a.makespan_ms - b.makespan_ms || spread(a) - spread(b));
   return candidates[0];
 }

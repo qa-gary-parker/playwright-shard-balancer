@@ -36,6 +36,16 @@ describe('balance with setup projects', () => {
     expect(plan.shards.map((s) => s.atoms.map((a) => a.id))).toEqual([['a1', 'a2', 'c1'], ['b1', 'b2']]);
   });
 
+  it('weighs setup against work atom by atom when neither split by sum nor by family is best', () => {
+    // By sum, 7 | 3+3+1 is even, but the second shard also pays the 2s setup: 9s. By family,
+    // 3 | 7+3+1 is 11s. Placing each atom where it ends soonest gives 7+1 | 3+3 plus setup: 8s.
+    const mixed = [atom('slow', 7_000, [], 0), atom('needs', 3_000, ['setup'], 1), atom('mid', 3_000, [], 2), atom('quick', 1_000, [], 3)];
+    const plan = balance(mixed, 2, 1, new Map([['setup', 2_000]]));
+    expect(plan.algorithm).toBe('setup-greedy');
+    expect(plan.shards.map((s) => s.atoms.map((a) => a.id))).toEqual([['slow', 'quick'], ['needs', 'mid']]);
+    expect(plan.makespan_ms).toBe(8_000);
+  });
+
   it('counts setup in the lower bound', () => {
     // Twelve 10s groups on 3 shards need 40s each, and every shard also runs the 30s setup.
     const atoms = Array.from({ length: 12 }, (_, i) => atom(`t${i}`, 10_000, ['setup'], i));

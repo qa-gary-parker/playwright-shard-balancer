@@ -265,7 +265,7 @@ function refineSums(items: Item[], bins: number[][]): number[][] {
 
 // With several workers per shard, a shard's wall time also depends on how its items pack onto
 // workers. Moves the heaviest items off the slowest shard while that lowers the slowest wall time.
-function refineWalls(items: Item[], bins: number[][], workers: number): number[][] {
+export function refineWalls(items: Item[], bins: number[][], workers: number): number[][] {
   const n = bins.length;
   const result = bins.map((b) => [...b]);
   const walls = result.map((b) => wallTime(items, b, workers));

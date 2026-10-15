@@ -175,7 +175,7 @@ export function runSimulate(opts: SimulateOptions): SimulateResult {
   const atoms = atomsOf(listed, estimator, granularity);
   const builtinAtoms = builtinGranularity === granularity ? atoms : atomsOf(listed, estimator, builtinGranularity);
   const overhead = opts.overheadMs ?? 0;
-  const plans = opts.shards.map((n) => ({ b: builtin(builtinAtoms, n, opts.workers, setup), p: balance(atoms, n, opts.workers, setup) }));
+  const plans = opts.shards.map((n) => ({ b: builtin(builtinAtoms, n, opts.workers, setup, listed.phases), p: balance(atoms, n, opts.workers, setup, listed.phases) }));
   const rows = plans.map(({ b, p }) => ({
     shards: p.shards.length,
     builtin_ms: b.makespan_ms,
@@ -227,7 +227,7 @@ export function runPlan(opts: { list: string; timings: string; shards: number; w
     }
   }
   const estimator = createEstimator(readTimings(opts.timings).timings);
-  const plan = balance(atomsOf(listed, estimator, opts.granularity), opts.shards, opts.workers, setupCosts(listed, estimator));
+  const plan = balance(atomsOf(listed, estimator, opts.granularity), opts.shards, opts.workers, setupCosts(listed, estimator), listed.phases);
   mkdirSync(opts.outDir, { recursive: true });
   const files = plan.shards.map((shard) => {
     const file = join(opts.outDir, `shard-${shard.shard}.txt`);

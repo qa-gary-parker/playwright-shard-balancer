@@ -128,6 +128,32 @@ export function dependencyProjects(projects: ProjectDeps[], names: string[]): Se
   return deps;
 }
 
+// The phase Playwright runs each setup and teardown project in (createPhasesTask). A project waits
+// for its dependencies, and a teardown also waits for every project that needs its setup. The
+// projects of one phase run side by side on the workers.
+export function setupPhases(projects: ProjectDeps[], names: string[]): Map<string, number> {
+  const byName = new Map(projects.map((p) => [p.name, p]));
+  const setups = dependencyProjects(projects, names);
+  const running = new Set([...names, ...setups]);
+  const needs = (name: string, setup: string): boolean => dependencyProjects(projects, [name]).has(setup);
+  const waitsFor = new Map([...running].map((name) => [name, (byName.get(name)?.dependencies ?? []).filter((d) => running.has(d))]));
+  for (const setup of running) {
+    const teardown = byName.get(setup)?.teardown;
+    if (teardown && running.has(teardown)) waitsFor.get(teardown)!.push(setup, ...[...running].filter((p) => p !== teardown && needs(p, setup)));
+  }
+  const phases = new Map<string, number>();
+  const phaseOf = (name: string, path = new Set<string>()): number => {
+    if (phases.has(name)) return phases.get(name)!;
+    if (path.has(name)) return 0;
+    path.add(name);
+    const phase = Math.max(-1, ...(waitsFor.get(name) ?? []).map((d) => phaseOf(d, path))) + 1;
+    path.delete(name);
+    phases.set(name, phase);
+    return phase;
+  };
+  return new Map([...setups].map((name) => [name, phaseOf(name)]));
+}
+
 export type Listing = {
   // Tests that sharding splits.
   tests: ReportTest[];
@@ -135,6 +161,7 @@ export type Listing = {
   setupTests: ReportTest[];
   // For each project with tests, the setup and teardown projects it needs, sorted.
   deps: Map<string, string[]>;
+  phases: Map<string, number>;
 };
 
 // The report's filteredProjects carry dependencies and teardown; its projects do not.
@@ -145,7 +172,7 @@ export function listing(report: unknown): Listing {
   const tests = all.filter((t) => !setup.has(t.project));
   const deps = new Map<string, string[]>();
   for (const name of new Set(tests.map((t) => t.project))) deps.set(name, [...dependencyProjects(projects, [name])].sort());
-  return { tests, setupTests: all.filter((t) => setup.has(t.project)), deps };
+  return { tests, setupTests: all.filter((t) => setup.has(t.project)), deps, phases: setupPhases(projects, all.map((t) => t.project)) };
 }
 
 export function listedTests(report: unknown): ReportTest[] {

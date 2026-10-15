@@ -3,8 +3,8 @@ import { dirname, relative, resolve, sep } from 'node:path';
 import type { FullConfig, FullResult, Reporter, Suite, TestCase, TestResult } from '@playwright/test/reporter';
 import { addToAtom, type Atom, mergeLocked, repeatSuffix } from './atoms.js';
 import { createEstimator, type Estimator } from './estimate.js';
-import { balance, formatMs, type Plan, type SetupCosts } from './plan.js';
-import { atLeast, dependencyProjects, testKey } from './report.js';
+import { balance, formatMs, type Plan, type SetupCosts, type SetupPhases } from './plan.js';
+import { atLeast, dependencyProjects, setupPhases, testKey } from './report.js';
 import { corpusSha, RUN_KIND, type RunRecord, type RunTest } from './run.js';
 import { emptyTimings, loadTimings } from './timings.js';
 
@@ -62,6 +62,7 @@ type Corpus = {
   atoms: Atom[];
   testsByAtom: Map<string, TestCase[]>;
   setup: SetupCosts;
+  phases: SetupPhases;
   exact: boolean;
   keys: string[];
   locked: number;
@@ -113,6 +114,7 @@ export function buildCorpus(config: FullConfig, suite: Suite, estimator: Estimat
     atoms: merged.atoms,
     testsByAtom,
     setup,
+    phases: setupPhases(config.projects, suite.suites.map((s) => s.title)),
     exact,
     keys,
     locked: atoms.size - merged.atoms.length,
@@ -195,7 +197,7 @@ export default class ShardBalancer implements Reporter {
     if (estimator.knownCount === 0) return fallback(`timings file ${path} has no entries`);
 
     const workers = this.options.workers ?? 1;
-    const plan: Plan = balance(corpus.atoms, config.shard.total, workers, corpus.setup);
+    const plan: Plan = balance(corpus.atoms, config.shard.total, workers, corpus.setup, corpus.phases);
     const mine = plan.shards[config.shard.current - 1];
     const keep = new Set<TestCase>(mine.atoms.flatMap((a) => corpus.testsByAtom.get(a.id) ?? []));
     excludeOthers(suite, dependencyProjects(config.projects, suite.suites.map((s) => s.title)), keep, testRun);

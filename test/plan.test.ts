@@ -46,6 +46,25 @@ describe('balance with setup projects', () => {
     expect(plan.makespan_ms).toBe(8_000);
   });
 
+  it('runs the setup projects of one phase side by side on the shard\'s workers', () => {
+    // Playwright starts admin and user setup together; cleanup is a teardown, so it waits for the tests.
+    const both = [atom('a', 10_000, ['admin-setup', 'cleanup', 'user-setup'], 0), atom('u', 10_000, ['cleanup', 'user-setup'], 1)];
+    const costs = new Map([['admin-setup', 4_000], ['user-setup', 1_500], ['cleanup', 800]]);
+    const phases = new Map([['admin-setup', 0], ['user-setup', 0], ['cleanup', 2]]);
+    expect(builtin(both, 1, 2, costs, phases).shards[0].setup_ms).toBe(4_800);
+    expect(builtin(both, 1, 1, costs, phases).shards[0].setup_ms).toBe(6_300);
+  });
+
+  it('mixes setup families on a shard whose workers run both setups at once', () => {
+    // Kept apart, the admin shard runs 4s of setup, then 9s, 5s and 8s on two workers: 17s. With
+    // both 4s setups side by side, a shard can take admin and user groups and finish by 13s.
+    const atoms = [atom('a9', 9_000, ['admin-setup'], 0), atom('a5', 5_000, ['admin-setup'], 1), atom('a8', 8_000, ['admin-setup'], 2), atom('u4', 4_000, ['user-setup'], 3)];
+    const plan = balance(atoms, 2, 2, new Map([['admin-setup', 4_000], ['user-setup', 4_000]]), new Map([['admin-setup', 0], ['user-setup', 0]]));
+    expect(plan.makespan_ms).toBe(13_000);
+    expect(plan.shards.map((s) => s.atoms.map((a) => a.id))).toContainEqual(expect.arrayContaining(['u4']));
+    expect(plan.shards.find((s) => s.atoms.some((a) => a.id === 'u4'))!.setup_ms).toBe(4_000);
+  });
+
   it('counts setup in the lower bound', () => {
     // Twelve 10s groups on 3 shards need 40s each, and every shard also runs the 30s setup.
     const atoms = Array.from({ length: 12 }, (_, i) => atom(`t${i}`, 10_000, ['setup'], i));

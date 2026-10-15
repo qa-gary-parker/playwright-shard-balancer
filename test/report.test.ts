@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { dependencyProjects, flattenReport, listedTests, reportErrors } from '../src/report.js';
+import { dependencyProjects, flattenReport, listedTests, reportErrors, setupPhases } from '../src/report.js';
 import { membership, runFixture } from './helpers.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'pwsb-report-'));
@@ -65,6 +65,24 @@ describe('dependencyProjects', () => {
 
   it('treats a project as a dependency even when it also has its own tests, as Playwright does', () => {
     expect(dependencyProjects(projects, ['setup', 'e2e']).has('setup')).toBe(true);
+  });
+});
+
+describe('setupPhases', () => {
+  it('orders setup and teardown projects in the phases Playwright runs them in', () => {
+    // setup and db start together, e2e waits for both, and cleanup, the teardown of setup, waits for e2e.
+    const projects = [
+      { name: 'setup', dependencies: [], teardown: 'cleanup' },
+      { name: 'cleanup', dependencies: [] },
+      { name: 'db', dependencies: [] },
+      { name: 'e2e', dependencies: ['setup', 'db'] },
+    ];
+    expect(setupPhases(projects, ['e2e'])).toEqual(new Map([['setup', 0], ['db', 0], ['cleanup', 2]]));
+  });
+
+  it('puts a setup project that needs another one in a later phase', () => {
+    const chain = [{ name: 'seed' }, { name: 'auth', dependencies: ['seed'] }, { name: 'e2e', dependencies: ['auth'] }];
+    expect(setupPhases(chain, ['e2e'])).toEqual(new Map([['seed', 0], ['auth', 1]]));
   });
 });
 

@@ -1,5 +1,5 @@
 name: Check and learn Playwright shard timings
-description: Proves every test ran exactly once across the shards, writes predicted against actual shard times to the job summary, then merges the run's durations into the cached timings.
+description: Proves every test ran exactly once across the shards, writes predicted against actual shard times to the job summary, then merges the run's durations into the newest cached timings.
 inputs:
   records:
     description: Directory holding every shard's run record (the reporter's "record" files), relative to the workspace.
@@ -19,16 +19,18 @@ inputs:
 runs:
   using: composite
   steps:
+    # The newest timings, not this run's pin: another run may have saved since. Records already
+    # merged are skipped by their sha, so a re-run does not count them twice.
     - uses: actions/cache/restore@v6
       with:
         path: ${{ inputs.path }}
-        key: ${{ inputs.prefix }}-pin-${{ github.run_id }}
+        key: ${{ inputs.prefix }}-timings-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: ${{ inputs.prefix }}-timings-
-    - shell: bash
+    - id: update
+      shell: bash
       env:
         RECORDS_DIR: ${{ inputs.records }}
         TIMINGS: ${{ inputs.path }}
-        LIST: ${{ inputs.list }}
         VERSION: ${{ inputs.version }}
       run: |
         if [ -x node_modules/.bin/playwright-shard-balancer ]; then pwsb=node_modules/.bin/playwright-shard-balancer; else pwsb="npx --yes playwright-shard-balancer@$VERSION"; fi
@@ -36,13 +38,21 @@ runs:
         records=("$RECORDS_DIR"/*.json)
         if [ ${#records[@]} -eq 0 ]; then echo "::error::no run records in $RECORDS_DIR"; exit 1; fi
         $pwsb update --timings "$TIMINGS" "${records[@]}" > /dev/null
+    - shell: bash
+      env:
+        RECORDS_DIR: ${{ inputs.records }}
+        LIST: ${{ inputs.list }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        if [ -x node_modules/.bin/playwright-shard-balancer ]; then pwsb=node_modules/.bin/playwright-shard-balancer; else pwsb="npx --yes playwright-shard-balancer@$VERSION"; fi
+        records=("$RECORDS_DIR"/*.json)
         if [ -n "$LIST" ]; then
           $pwsb check "${records[@]}" --list "$LIST" --summary "$GITHUB_STEP_SUMMARY" > /dev/null
         else
           $pwsb check "${records[@]}" --summary "$GITHUB_STEP_SUMMARY" > /dev/null
         fi
     # Saved even when check fails: the durations are still good samples.
-    - if: always()
+    - if: always() && steps.update.outcome == 'success'
       uses: actions/cache/save@v6
       with:
         path: ${{ inputs.path }}

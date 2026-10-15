@@ -1,0 +1,59 @@
+{
+  "name": "playwright-shard-balancer",
+  "version": "0.1.0",
+  "description": "Duration-balanced Playwright sharding: every shard finishes at about the same time, with no orchestration job.",
+  "author": "Gary Parker",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qa-gary-parker/playwright-shard-balancer.git"
+  },
+  "homepage": "https://github.com/qa-gary-parker/playwright-shard-balancer#readme",
+  "bugs": "https://github.com/qa-gary-parker/playwright-shard-balancer/issues",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/reporter.d.ts",
+      "default": "./dist/reporter.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "playwright-shard-balancer": "dist/cli.js"
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node -e \"require('fs').chmodSync('dist/cli.js',0o755)\"",
+    "prepare": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && vitest run",
+    "bench": "npm run build && node benchmark/run.mjs",
+    "prepublishOnly": "npm test"
+  },
+  "keywords": [
+    "playwright",
+    "sharding",
+    "test-splitting",
+    "parallel",
+    "ci"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@playwright/test": ">=1.56"
+  },
+  "peerDependenciesMeta": {
+    "@playwright/test": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.4"
+  }
+}

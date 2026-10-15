@@ -1,0 +1,66 @@
+name: actions
+
+# Runs the composite actions on the fixture suite: the first run has no timings and uses
+# Playwright's split; later runs restore the saved timings and balance in strict mode.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shard:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: restore
+        uses: ./actions/restore
+        with:
+          path: test/fixtures/pw/shard-timings.json
+          prefix: pwsb-selftest
+      - run: echo "timings found=${{ steps.restore.outputs.found }}, strict=${PLAYWRIGHT_SHARD_BALANCER_STRICT:-0}"
+      - run: npx playwright test --config test/fixtures/pw/playwright.config.ts --shard=${{ matrix.shard }}/${{ strategy.job-total }} > /dev/null
+        env:
+          PWSB_REPORTER: ${{ github.workspace }}/dist/reporter.js
+          PWSB_OPTIONS: '{"timings":"shard-timings.json","record":"shard-records/run-{shard}.json"}'
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: shard-record-${{ matrix.shard }}
+          path: test/fixtures/pw/shard-records/
+          retention-days: 1
+
+  finish:
+    needs: shard
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # The action runs the project's installed CLI; here that is this repo's build.
+      - run: ln -s ../../dist/cli.js node_modules/.bin/playwright-shard-balancer
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: shard-record-*
+          path: shard-records
+          merge-multiple: true
+      - uses: ./actions/finish
+        with:
+          records: shard-records
+          path: test/fixtures/pw/shard-timings.json
+          prefix: pwsb-selftest

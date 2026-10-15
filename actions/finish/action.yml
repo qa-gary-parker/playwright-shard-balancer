@@ -1,0 +1,49 @@
+name: Check and learn Playwright shard timings
+description: Proves every test ran exactly once across the shards, writes predicted against actual shard times to the job summary, then merges the run's durations into the cached timings.
+inputs:
+  records:
+    description: Directory holding every shard's run record (the reporter's "record" files).
+    default: shard-records
+  path:
+    description: Timings file, as named in the reporter's "timings" option.
+    default: shard-timings.json
+  prefix:
+    description: Cache key prefix, the same as in the restore action.
+    default: pwsb
+  list:
+    description: Optional `playwright test --list --reporter=json` output, to name any test no shard ran.
+    default: ''
+  version:
+    description: playwright-shard-balancer version to run when the project does not have it installed.
+    default: latest
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache/restore@v6
+      with:
+        path: ${{ inputs.path }}
+        key: ${{ inputs.prefix }}-pin-${{ github.run_id }}
+        restore-keys: ${{ inputs.prefix }}-timings-
+    - shell: bash
+      env:
+        RECORDS_DIR: ${{ inputs.records }}
+        TIMINGS: ${{ inputs.path }}
+        LIST: ${{ inputs.list }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        if [ -x node_modules/.bin/playwright-shard-balancer ]; then pwsb=node_modules/.bin/playwright-shard-balancer; else pwsb="npx --yes playwright-shard-balancer@$VERSION"; fi
+        shopt -s nullglob
+        records=("$RECORDS_DIR"/*.json)
+        if [ ${#records[@]} -eq 0 ]; then echo "::error::no run records in $RECORDS_DIR"; exit 1; fi
+        $pwsb update --timings "$TIMINGS" "${records[@]}" > /dev/null
+        if [ -n "$LIST" ]; then
+          $pwsb check "${records[@]}" --list "$LIST" --summary "$GITHUB_STEP_SUMMARY" > /dev/null
+        else
+          $pwsb check "${records[@]}" --summary "$GITHUB_STEP_SUMMARY" > /dev/null
+        fi
+    # Saved even when check fails: the durations are still good samples.
+    - if: always()
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ inputs.path }}
+        key: ${{ inputs.prefix }}-timings-${{ github.run_id }}-${{ github.run_attempt }}

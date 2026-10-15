@@ -1,0 +1,45 @@
+name: e2e
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps
+      - uses: qa-gary-parker/playwright-shard-balancer/actions/restore@v0
+      - run: npx playwright test --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: shard-record-${{ matrix.shard }}
+          path: shard-records/
+          retention-days: 1
+
+  shard-timings:
+    needs: e2e
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: shard-record-*
+          path: shard-records
+          merge-multiple: true
+      - uses: qa-gary-parker/playwright-shard-balancer/actions/finish@v0

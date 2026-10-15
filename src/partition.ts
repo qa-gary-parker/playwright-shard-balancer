@@ -267,11 +267,12 @@ function refineSums(items: Item[], bins: number[][]): number[][] {
 
 // With several workers per shard, a shard's wall time also depends on how its items pack onto
 // workers. Moves the heaviest items off the slowest shard, or swaps them for lighter ones, while
-// that lowers the slowest wall time.
-export function refineWalls(items: Item[], bins: number[][], workers: number): number[][] {
+// that lowers the slowest wall time. extra adds time a shard spends outside its items, such as setup.
+export function refineWalls(items: Item[], bins: number[][], workers: number, extra: (bin: number[]) => number = () => 0): number[][] {
   const n = bins.length;
   const result = bins.map((b) => [...b]);
-  const walls = result.map((b) => wallTime(items, b, workers));
+  const wall = (bin: number[]) => wallTime(items, bin, workers) + extra(bin);
+  const walls = result.map(wall);
   let visits = WALL_SWAP_VISITS;
   for (let iter = 0; iter < WALL_ITERATIONS; iter++) {
     let s = 0;
@@ -288,8 +289,8 @@ export function refineWalls(items: Item[], bins: number[][], workers: number): n
       if (max < walls[s] && (!best || max < best.max || (max === best.max && sq < best.sq))) best = { t, a, b, ws, wt, max, sq };
     };
     for (const a of candidates) {
-      const ws = wallTime(items, result[s].filter((i) => i !== a), workers);
-      for (const t of targets) consider(t, a, -1, ws, wallTime(items, [...result[t], a], workers));
+      const ws = wall(result[s].filter((i) => i !== a));
+      for (const t of targets) consider(t, a, -1, ws, wall([...result[t], a]));
     }
     // No single move helps: swap a heavy item of the slowest shard for a lighter one.
     swaps: for (const t of best ? [] : targets) {
@@ -298,8 +299,8 @@ export function refineWalls(items: Item[], bins: number[][], workers: number): n
         for (const b of partners) {
           if (items[b].cost >= items[a].cost) continue;
           if ((visits -= result[s].length + result[t].length) < 0) break swaps;
-          const ws = wallTime(items, [...result[s].filter((i) => i !== a), b], workers);
-          consider(t, a, b, ws, wallTime(items, [...result[t].filter((i) => i !== b), a], workers));
+          const ws = wall([...result[s].filter((i) => i !== a), b]);
+          consider(t, a, b, ws, wall([...result[t].filter((i) => i !== b), a]));
         }
       }
     }

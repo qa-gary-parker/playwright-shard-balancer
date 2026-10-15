@@ -99,6 +99,9 @@ function build(strategy: Plan['strategy'], algorithm: string, atoms: Atom[], bin
 }
 
 const spread = (plan: Plan) => plan.shards.reduce((acc, s) => acc + s.wall_ms * s.wall_ms, 0);
+const byFinish = (a: { plan: Plan }, b: { plan: Plan }) => a.plan.makespan_ms - b.plan.makespan_ms || spread(a.plan) - spread(b.plan);
+// Splits refined again with setup counted: the best ones, since each pass costs as much as the first.
+const SETUP_REFINED = 2;
 
 // When projects need different setup projects, a shard pays for the setup of every family it
 // hosts. This candidate gives each family its own shards, sized by its work.
@@ -134,8 +137,7 @@ function familyBins(atoms: Atom[], shards: number, workers: number, setupTime: S
 
 // Largest first, each atom to the shard where it ends soonest, counting the setup the shard does
 // not run yet. The other candidates split by work alone or by whole family.
-function greedyBins(atoms: Atom[], shards: number, workers: number, setupTime: SetupTime): number[][] | null {
-  if (!atoms.some((a) => setupTime(a.deps) > 0)) return null;
+function greedyBins(atoms: Atom[], shards: number, workers: number, setupTime: SetupTime): number[][] {
   const bins: number[][] = Array.from({ length: shards }, () => []);
   const work = new Array<number>(shards).fill(0);
   const hosted = bins.map(() => new Set<string>());
@@ -153,19 +155,26 @@ function greedyBins(atoms: Atom[], shards: number, workers: number, setupTime: S
 
 export function balance(atoms: Atom[], shards: number, workers = 1, setup: SetupCosts = new Map(), phases: SetupPhases = new Map()): Plan {
   const setupTime = setupTimer(setup, phases, workers);
-  const result = partition(toItems(atoms), shards, workers);
-  const candidates = [build('balanced', result.algorithm, atoms, result.bins, workers, setupTime)];
-  const families = familyBins(atoms, shards, workers, setupTime);
-  if (families) candidates.push(build('balanced', 'setup-families', atoms, families, workers, setupTime));
-  const greedy = greedyBins(atoms, shards, workers, setupTime);
-  if (greedy && workers > 1) candidates.push(build('balanced', 'setup-greedy+workers', atoms, refineWalls(toItems(atoms), greedy, workers), workers, setupTime));
-  else if (greedy) candidates.push(build('balanced', 'setup-greedy', atoms, greedy, workers, setupTime));
-  candidates.sort((a, b) => a.makespan_ms - b.makespan_ms || spread(a) - spread(b));
-  return candidates[0];
+  const items = toItems(atoms);
+  const result = partition(items, shards, workers);
+  const plan = (name: string, bins: number[][]) => ({ bins, plan: build('balanced', name, atoms, bins, workers, setupTime) });
+  const candidates = [plan(result.algorithm, result.bins)];
+  if (atoms.some((a) => setupTime(a.deps) > 0)) {
+    const families = familyBins(atoms, shards, workers, setupTime);
+    if (families) candidates.push(plan('setup-families', families));
+    const greedy = greedyBins(atoms, shards, workers, setupTime);
+    candidates.push(workers > 1 ? plan('setup-greedy+workers', refineWalls(items, greedy, workers)) : plan('setup-greedy', greedy));
+    // Which groups share a shard decides what setup it runs, so refine the best splits with setup counted.
+    const withSetup = (bin: number[]) => setupTime(bin.flatMap((i) => atoms[i].deps));
+    for (const c of [...candidates].sort(byFinish).slice(0, SETUP_REFINED)) candidates.push(plan(`${c.plan.algorithm}+setup`, refineWalls(items, c.bins, workers, withSetup)));
+  }
+  // Last, so it wins only when strictly faster: no plan is predicted to be slower than Playwright's own.
+  candidates.push(plan('playwright-order', builtinBins(atoms, shards)));
+  return candidates.sort(byFinish)[0].plan;
 }
 
 // Playwright's own split (filterForShard): contiguous runs of groups, sized by test count.
-export function builtin(atoms: Atom[], shards: number, workers = 1, setup: SetupCosts = new Map(), phases: SetupPhases = new Map()): Plan {
+function builtinBins(atoms: Atom[], shards: number): number[][] {
   const active = atoms.map((a) => a.active);
   const sizes = active.some(Boolean) ? active : atoms.map((a) => a.keys.length);
   const total = sizes.reduce((a, b) => a + b, 0);
@@ -186,7 +195,11 @@ export function builtin(atoms: Atom[], shards: number, workers = 1, setup: Setup
     }
     current += sizes[index];
   });
-  return build('builtin', 'playwright', atoms, bins, workers, setupTimer(setup, phases, workers));
+  return bins;
+}
+
+export function builtin(atoms: Atom[], shards: number, workers = 1, setup: SetupCosts = new Map(), phases: SetupPhases = new Map()): Plan {
+  return build('builtin', 'playwright', atoms, builtinBins(atoms, shards), workers, setupTimer(setup, phases, workers));
 }
 
 export function summary(plan: Plan) {

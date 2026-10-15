@@ -65,6 +65,28 @@ describe('balance with setup projects', () => {
     expect(plan.shards.find((s) => s.atoms.some((a) => a.id === 'u4'))!.setup_ms).toBe(4_000);
   });
 
+  it('refines each split with setup counted, so a short group can join a shard that pays another setup', () => {
+    // By family, the user shard runs 7+7+1 after its 1s setup: 16s. Moving the 1s group next to the
+    // admin group costs that shard only the 1s user setup: 7+7 | 4+1, done by 15s.
+    const atoms = [atom('u7a', 7_000, ['user'], 0), atom('u7b', 7_000, ['user'], 1), atom('a4', 4_000, ['admin'], 2), atom('u1', 1_000, ['user'], 3)];
+    const plan = balance(atoms, 2, 1, new Map([['admin', 5_000], ['user', 1_000]]));
+    expect(plan.makespan_ms).toBe(15_000);
+    expect(plan.shards.map((s) => s.atoms.map((a) => a.id)).sort()).toEqual([['a4', 'u1'], ['u7a', 'u7b']]);
+  });
+
+  it('never plans a slower run than Playwright\'s own split', () => {
+    let seed = 21;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    for (let t = 0; t < 400; t++) {
+      const setup = new Map([['admin', 1_000 + Math.floor(next() * 5_000)], ['user', 1_000 + Math.floor(next() * 2_000)]]);
+      const atoms = Array.from({ length: 4 + Math.floor(next() * 5) }, (_, i) => atom(`t${i}`, 1_000 + Math.floor(next() * 8_000), [next() < 0.35 ? 'admin' : 'user'], i));
+      const shards = 2 + Math.floor(next() * 2);
+      const workers = 1 + Math.floor(next() * 2);
+      const phases = new Map([['admin', 0], ['user', 0]]);
+      expect(balance(atoms, shards, workers, setup, phases).makespan_ms).toBeLessThanOrEqual(builtin(atoms, shards, workers, setup, phases).makespan_ms);
+    }
+  });
+
   it('counts setup in the lower bound', () => {
     // Twelve 10s groups on 3 shards need 40s each, and every shard also runs the 30s setup.
     const atoms = Array.from({ length: 12 }, (_, i) => atom(`t${i}`, 10_000, ['setup'], i));

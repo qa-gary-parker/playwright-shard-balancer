@@ -13,6 +13,8 @@ Duration-balanced sharding for Playwright. Every shard finishes at about the sam
 - Answers "how many shards?". `simulate` replays your suite at any shard count, overhead included, before you change CI.
 - `plan` writes `--test-list` files for Playwright 1.56 to 1.61, or for CI that prefers one planning job.
 
+Overview and FAQ: [garyparker.dev/projects/playwright-shard-balancer](https://garyparker.dev/projects/playwright-shard-balancer)
+
 ## Quick start
 
 ```sh
